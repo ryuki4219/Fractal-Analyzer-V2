@@ -29,12 +29,21 @@ from PIL import Image
 import io
 import os
 import joblib
-from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier
+from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier, GradientBoostingRegressor
 from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import mean_absolute_error, accuracy_score
+from sklearn.metrics import mean_absolute_error, accuracy_score, r2_score
+from sklearn.model_selection import train_test_split
 import matplotlib.pyplot as plt
 from skimage import filters, color
 from skimage.feature import canny
+import matplotlib
+matplotlib.rcParams['font.sans-serif'] = ['MS Gothic', 'Yu Gothic', 'Meiryo', 'DejaVu Sans']
+matplotlib.rcParams['axes.unicode_minus'] = False
+
+# --- 解像度補正モデル用の定数 ----------------------------------------------
+RESOLUTION_MODEL_PATH = 'resolution_correction_model.pkl'
+RESOLUTION_SCALER_PATH = 'resolution_correction_scaler.pkl'
+RESOLUTION_TRAIN_DATA = 'resolution_training_data.csv'
 
 # --- ユーティリティ関数 -------------------------------------------------
 
@@ -78,30 +87,35 @@ def boxcount_fractal_dim(bw: np.ndarray, sizes=None):
     S = bw.shape
     if sizes is None:
         max_dim = max(S)
-        # 箱サイズは 2^k 系列で生成
-        sizes = np.array([2 ** i for i in range(int(np.log2(min(S))) - 0)])
+        # 箱サイズは 2^k 系列で生成（サイズを制限して高速化）
+        max_power = min(int(np.log2(min(S))), 10)  # 最大10段階に制限
+        sizes = np.array([2 ** i for i in range(1, max_power)])
         sizes = sizes[sizes <= min(S)]
         if len(sizes) < 3:
-            sizes = np.array([1,2,4,8])
+            sizes = np.array([2,4,8,16])
     counts = []
+    # NumPy配列操作で高速化
+    bw_binary = (bw > 0).astype(np.uint8)  # 事前に二値化
     for size in sizes:
         # 画像を size x size のブロックに分割して、白が含まれるブロックを数える
-        nx = int(np.ceil(S[1] / size))
         ny = int(np.ceil(S[0] / size))
+        nx = int(np.ceil(S[1] / size))
         count = 0
+        # ベクトル化された処理で高速化
         for i in range(ny):
+            y0 = i * size
+            y1 = min(y0 + size, S[0])
             for j in range(nx):
-                y0 = i * size
                 x0 = j * size
-                block = bw[y0:y0 + size, x0:x0 + size]
-                if np.any(block > 0):
+                x1 = min(x0 + size, S[1])
+                if np.any(bw_binary[y0:y1, x0:x1]):
                     count += 1
         counts.append(count)
     sizes = np.array(sizes, dtype=float)
     counts = np.array(counts, dtype=float)
     # fractal dimension D is slope of log(count) vs log(1/size)
     # linear regression via least squares
-    with np.errstate(divide='ignore'):
+    with np.errstate(divide='ignore', invalid='ignore'):
         logs = np.log(counts)
         loginv = np.log(1.0 / sizes)
     # 単純な線形回帰
@@ -130,6 +144,130 @@ def extract_features_from_image(img_bgr: np.ndarray, bw: np.ndarray, fractal_dim
     occupancy = compute_spatial_occupancy(bw)
     # フラクタル次元自身も特徴として含める
     return np.array([mean_int, std_int, edge_density, occupancy, fractal_dim], dtype=float)
+
+# --- 解像度補正モデル用の関数 ---------------------------------------------
+
+def generate_low_resolution_versions(img_bgr: np.ndarray, scale_factors=[0.5, 0.25, 0.1]):
+    """
+    高解像度画像から複数の低解像度バージョンを生成
+    """
+    low_res_images = []
+    for scale in scale_factors:
+        h, w = img_bgr.shape[:2]
+        new_h, new_w = int(h * scale), int(w * scale)
+        if new_h > 10 and new_w > 10:  # 最小サイズチェック
+            low_res = cv2.resize(img_bgr, (new_w, new_h), interpolation=cv2.INTER_AREA)
+            # 元のサイズに戻す（低解像度のまま拡大）
+            upscaled = cv2.resize(low_res, (w, h), interpolation=cv2.INTER_LINEAR)
+            low_res_images.append((scale, upscaled))
+    return low_res_images
+
+
+def extract_resolution_features(img_bgr: np.ndarray, bw: np.ndarray, fractal_dim: float):
+    """
+    解像度補正用の拡張特徴量を抽出
+    低解像度画像の特性を捉える特徴量
+    """
+    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+    h, w = gray.shape
+    
+    # 基本統計量
+    mean_int = float(np.mean(gray))
+    std_int = float(np.std(gray))
+    
+    # エッジ特徴
+    edge = canny(gray / 255.0)
+    edge_density = float(np.count_nonzero(edge) / edge.size)
+    
+    # 占有率
+    occupancy = compute_spatial_occupancy(bw)
+    
+    # テクスチャ特徴（分散の局所的な変動）
+    kernel_size = max(3, min(h, w) // 20)
+    if kernel_size % 2 == 0:
+        kernel_size += 1
+    local_std = cv2.blur(gray.astype(float)**2, (kernel_size, kernel_size)) - \
+                cv2.blur(gray.astype(float), (kernel_size, kernel_size))**2
+    texture_variance = float(np.mean(np.sqrt(np.abs(local_std))))
+    
+    # 画像サイズ情報（正規化）
+    img_size = float(np.log(h * w + 1))
+    aspect_ratio = float(w / h)
+    
+    # 周波数成分（FFT）
+    fft = np.fft.fft2(gray)
+    fft_shift = np.fft.fftshift(fft)
+    magnitude_spectrum = np.abs(fft_shift)
+    high_freq_energy = float(np.mean(magnitude_spectrum[h//4:3*h//4, w//4:3*w//4]))
+    
+    # フラクタル次元（低解像度で計算されたもの）
+    
+    return np.array([
+        mean_int, std_int, edge_density, occupancy, fractal_dim,
+        texture_variance, img_size, aspect_ratio, high_freq_energy
+    ], dtype=float)
+
+
+def train_resolution_correction_model(training_data_path=RESOLUTION_TRAIN_DATA):
+    """
+    解像度補正モデルを学習
+    """
+    if not os.path.exists(training_data_path):
+        return None, None, "学習データが見つかりません"
+    
+    df = pd.read_csv(training_data_path)
+    
+    # 特徴量とターゲットを分離
+    feature_cols = [col for col in df.columns if col.startswith('feat_')]
+    X = df[feature_cols].values
+    y = df['target_high_res_fractal'].values
+    
+    # データ分割
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    
+    # スケーリング
+    scaler = StandardScaler()
+    X_train_scaled = scaler.fit_transform(X_train)
+    X_test_scaled = scaler.transform(X_test)
+    
+    # モデル学習（Gradient Boostingを使用）
+    model = GradientBoostingRegressor(
+        n_estimators=200,
+        learning_rate=0.05,
+        max_depth=5,
+        random_state=42
+    )
+    model.fit(X_train_scaled, y_train)
+    
+    # 評価
+    y_pred = model.predict(X_test_scaled)
+    mae = mean_absolute_error(y_test, y_pred)
+    r2 = r2_score(y_test, y_pred)
+    
+    # 保存
+    joblib.dump(model, RESOLUTION_MODEL_PATH)
+    joblib.dump(scaler, RESOLUTION_SCALER_PATH)
+    
+    return model, scaler, f"MAE: {mae:.4f}, R²: {r2:.4f}"
+
+
+def predict_high_res_fractal(low_res_features, model=None, scaler=None):
+    """
+    低解像度画像の特徴量から高解像度相当のフラクタル次元を予測
+    """
+    if model is None or scaler is None:
+        if os.path.exists(RESOLUTION_MODEL_PATH) and os.path.exists(RESOLUTION_SCALER_PATH):
+            model = joblib.load(RESOLUTION_MODEL_PATH)
+            scaler = joblib.load(RESOLUTION_SCALER_PATH)
+        else:
+            return None
+    
+    X = low_res_features.reshape(1, -1)
+    X_scaled = scaler.transform(X)
+    predicted_fractal = model.predict(X_scaled)[0]
+    
+    return float(predicted_fractal)
+
 
 # --- 永続化ファイル & モデル初期化 ----------------------------------------
 MODEL_PATH = 'model_joblib.pkl'
@@ -186,6 +324,37 @@ def load_train_data():
 st.set_page_config(layout='wide', page_title='フラクタル画像解析アプリ')
 st.title('フラクタルを用いた画像解析アプリ')
 
+# アプリケーション概要と解像度補正AIの紹介
+with st.expander('ℹ️ このアプリについて / 解像度補正AI機能', expanded=False):
+    col_info1, col_info2 = st.columns(2)
+    
+    with col_info1:
+        st.markdown("""
+        ###  基本機能
+        - **Box-Counting法**によるフラクタル次元解析
+        - **二値化処理**と空間占有率の計算
+        - **複数画像の一括解析**とExcel出力
+        - **機械学習**による予測機能
+        - **異常値の自動検知**
+        """)
+    
+    with col_info2:
+        st.markdown("""
+        ### 解像度補正AI
+        低解像度画像でも高解像度相当のフラクタル次元を推定！
+        
+        **クイックスタート:**
+        1. 高解像度画像を用意
+        2. サイドバー「学習データ生成モード」ON → アップロード
+        3. 20～100枚繰り返す
+        4. 「解像度補正モデルを学習」ボタンをクリック
+        5. 「解像度補正を有効化」ON
+        6. 低解像度画像をアップロード
+        7. 補正結果を確認！
+        
+        📖 詳細はサイドバーの「解像度補正AIの使い方」を参照
+        """)
+
 st.sidebar.header('設定')
 # 閾値入力: 数値入力とスライダーを両方用意
 thresh_mode = st.sidebar.selectbox('閾値入力方式', ['スライダー', '数値入力'])
@@ -204,11 +373,92 @@ else:
 st.sidebar.markdown('---')
 # 学習ボタン
 do_train_now = st.sidebar.button('学習を実行（保存済みデータで再学習）')
+
+# 解像度補正モデルセクション
+st.sidebar.markdown('---')
+st.sidebar.subheader('🔬 解像度補正AI')
+enable_resolution_correction = st.sidebar.checkbox('解像度補正を有効化', value=False, 
+    help='低解像度画像から高解像度相当のフラクタル次元を推定します')
+
+# 学習データ生成モード
+if st.sidebar.checkbox('学習データ生成モード', value=False, 
+    help='高解像度画像から低解像度バージョンを自動生成し、学習データを作成します'):
+    st.sidebar.info('アップロードした画像から学習データを自動生成します')
+    generate_training_data = True
+else:
+    generate_training_data = False
+
+# 解像度補正モデルの学習ボタン
+if st.sidebar.button('解像度補正モデルを学習'):
+    with st.spinner('解像度補正モデルを学習中...'):
+        model_res, scaler_res, result_msg = train_resolution_correction_model()
+        if model_res is not None:
+            st.sidebar.success(f'学習完了: {result_msg}')
+        else:
+            st.sidebar.error(result_msg)
+
+# 解像度補正モデルの状態表示
+if os.path.exists(RESOLUTION_MODEL_PATH):
+    st.sidebar.success('✓ 解像度補正モデル: 読み込み済み')
+    if os.path.exists(RESOLUTION_TRAIN_DATA):
+        df_res = pd.read_csv(RESOLUTION_TRAIN_DATA)
+        st.sidebar.write(f'学習データ数: {len(df_res)}件')
+else:
+    st.sidebar.warning('解像度補正モデル: 未学習')
+
+# 使い方ガイドの表示
+with st.sidebar.expander('📖 解像度補正AIの使い方', expanded=False):
+    st.markdown("""
+    ### ステップバイステップガイド
+    
+    **1️⃣ 高解像度画像を用意**
+    - なるべく高品質な画像を準備
+    
+    **2️⃣ 学習データ生成**
+    - ☑「学習データ生成モード」ON
+    - 画像をアップロード
+    - 自動で5段階の解像度データ生成
+    
+    **3️⃣ データ収集**
+    - 複数の画像で繰り返し
+    - 推奨: 20～100枚
+    
+    **4️⃣ モデル学習**
+    - 「解像度補正モデルを学習」ボタンをクリック
+    - 学習完了を待つ
+    
+    **5️⃣ 補正の有効化**
+    - ☑「解像度補正を有効化」ON
+    
+    **6️⃣ 低解像度画像で検証**
+    - 低解像度画像をアップロード
+    
+    **7️⃣ 結果確認**
+    - 高解像度相当のフラクタル次元が表示される！
+    
+    ---
+    💡 **ヒント**: 様々なタイプの画像で学習すると精度が向上します
+    """)
+
 # モデルロード
 models = load_models()
 
 # ファイル選択: 複数ファイルアップロードでフォルダ内一括解析に対応
 uploaded_files = st.file_uploader('画像ファイルを選択（複数可）', type=['png','jpg','jpeg','bmp','tif','tiff'], accept_multiple_files=True)
+
+# 学習データ生成モード時のガイド表示
+if generate_training_data:
+    st.info('🔄 **学習データ生成モード** - 高解像度画像をアップロードすると、自動的に5段階の解像度で学習データを生成します')
+    st.markdown("""
+    **現在のステップ**: 2️⃣ 学習データ生成中
+    - ✅ 高解像度画像をアップロード
+    - ⏳ 複数枚（20～100枚推奨）繰り返す
+    - ⏭️ 完了後、サイドバーで「解像度補正モデルを学習」をクリック
+    """)
+
+# 解像度補正有効時のガイド表示
+if enable_resolution_correction and os.path.exists(RESOLUTION_MODEL_PATH):
+    st.success('✅ **解像度補正AI有効** - 低解像度画像でも高解像度相当のフラクタル次元を推定します')
 
 # 解析/学習用の表示領域
 col1, col2 = st.columns([2,1])
@@ -221,6 +471,44 @@ with col1:
         for file in uploaded_files:
             st.write('ファイル:', file.name)
             img_bgr = load_image_bytes(file)
+            
+            # 学習データ生成モードの場合
+            if generate_training_data:
+                st.info('🔄 学習データ生成モード: 複数解像度で解析中...')
+                # 元画像（高解像度）の解析
+                img_high, _ = resize_image(img_bgr, max_side)
+                gray_high = cv2.cvtColor(img_high, cv2.COLOR_BGR2GRAY)
+                bw_high = binarize_image_gray(gray_high, thresh_value)
+                fractal_high, _, _ = boxcount_fractal_dim(bw_high)
+                
+                # 低解像度バージョンを生成して解析
+                low_res_versions = generate_low_resolution_versions(img_high, [0.5, 0.3, 0.2, 0.15, 0.1])
+                
+                training_records = []
+                for scale, img_low in low_res_versions:
+                    gray_low = cv2.cvtColor(img_low, cv2.COLOR_BGR2GRAY)
+                    bw_low = binarize_image_gray(gray_low, thresh_value)
+                    fractal_low, _, _ = boxcount_fractal_dim(bw_low)
+                    
+                    # 拡張特徴量を抽出
+                    features_low = extract_resolution_features(img_low, bw_low, fractal_low)
+                    
+                    # 学習データとして保存
+                    record = {'scale': scale, 'target_high_res_fractal': fractal_high}
+                    for idx, feat_val in enumerate(features_low):
+                        record[f'feat_{idx}'] = feat_val
+                    training_records.append(record)
+                
+                # CSVに追記
+                df_new = pd.DataFrame(training_records)
+                if os.path.exists(RESOLUTION_TRAIN_DATA):
+                    df_new.to_csv(RESOLUTION_TRAIN_DATA, mode='a', header=False, index=False)
+                else:
+                    df_new.to_csv(RESOLUTION_TRAIN_DATA, index=False)
+                
+                st.success(f'✓ {len(training_records)}件の学習データを生成しました（解像度: {[f"{s*100:.0f}%" for s, _ in low_res_versions]}）')
+                continue  # 次のファイルへ
+            
             img_bgr, scale = resize_image(img_bgr, max_side)
             gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
 
@@ -230,6 +518,17 @@ with col1:
             # フラクタル次元計算
             fractal_d, sizes, counts = boxcount_fractal_dim(bw)
             occupancy = compute_spatial_occupancy(bw)
+            
+            # 解像度補正の適用
+            corrected_fractal_d = None
+            if enable_resolution_correction and os.path.exists(RESOLUTION_MODEL_PATH):
+                try:
+                    features_res = extract_resolution_features(img_bgr, bw, fractal_d)
+                    corrected_fractal_d = predict_high_res_fractal(features_res)
+                    if corrected_fractal_d is not None:
+                        st.info(f'🤖 AI補正: {fractal_d:.4f} → {corrected_fractal_d:.4f} (差: {abs(corrected_fractal_d - fractal_d):.4f})')
+                except Exception as e:
+                    st.warning(f'解像度補正エラー: {e}')
 
             # 異常検知: 極端な占有率や二値化がほぼ全白/全黒なら失敗扱い
             white_ratio = occupancy
@@ -265,44 +564,122 @@ with col1:
                     st.write('予測中にエラーが発生しました:', e)
 
             # 結果表示
-            st.write(f'- フラクタル次元: {fractal_d:.4f}')
+            st.write(f'- フラクタル次元（実測）: {fractal_d:.4f}')
+            if corrected_fractal_d is not None:
+                st.write(f'- フラクタル次元（AI補正後）: {corrected_fractal_d:.4f}')
+                st.write(f'- 補正量: {(corrected_fractal_d - fractal_d):+.4f}')
             st.write(f'- 空間占有率: {occupancy*100:.2f}%')
             if fail_flag:
                 st.warning('自動検知: 失敗と判定されました。理由: ' + ';'.join(fail_reasons))
             else:
                 st.success('自動検知: 正常と判定')
 
+            # 元画像と二値化画像の表示
+            st.subheader('画像表示')
+            img_col1, img_col2 = st.columns(2)
+            with img_col1:
+                st.write('**元画像**')
+                # BGRからRGBに変換して表示
+                img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+                st.image(img_rgb, use_container_width=True)
+            with img_col2:
+                st.write('**二値化画像**')
+                st.image(bw, use_container_width=True)
+
             # グラフ: フラクタル次元の折れ線（sizes vs counts から可視化）
-            fig1, ax1 = plt.subplots()
-            ax1.plot(np.log(1.0/sizes), np.log(counts), marker='o')
-            ax1.set_xlabel('log(1/size)')
-            ax1.set_ylabel('log(count)')
-            ax1.set_title('箱ひきに基づくフラクタル次元推定（線形フィットの傾きが次元）')
-            st.pyplot(fig1)
+            st.subheader('フラクタル次元解析')
+            fig1, ax1 = plt.subplots(figsize=(8, 5), dpi=80)  # DPI下げて高速化
+            
+            # 実測値のプロット（青色）
+            ax1.plot(np.log(1.0/sizes), np.log(counts), marker='o', linewidth=2, markersize=8, 
+                    color='blue', label=f'実測値 (傾き={fractal_d:.3f})')
+            
+            # 解像度補正AI予測値がある場合は緑色で追加プロット
+            if corrected_fractal_d is not None:
+                x_vals = np.log(1.0/sizes)
+                intercept = np.mean(np.log(counts) - corrected_fractal_d * x_vals)
+                y_corrected = corrected_fractal_d * x_vals + intercept
+                ax1.plot(x_vals, y_corrected, marker='^', linewidth=2, markersize=6, 
+                        color='green', linestyle='-.', label=f'解像度補正AI (傾き={corrected_fractal_d:.3f})', alpha=0.8)
+            
+            # 従来のAI予測値がある場合は赤色で追加プロット
+            if pred is not None and 'fractal' in pred:
+                pred_fractal = pred['fractal']
+                x_vals = np.log(1.0/sizes)
+                intercept = np.mean(np.log(counts) - pred_fractal * x_vals)
+                y_pred = pred_fractal * x_vals + intercept
+                ax1.plot(x_vals, y_pred, marker='s', linewidth=2, markersize=6, 
+                        color='red', linestyle='--', label=f'従来AI予測 (傾き={pred_fractal:.3f})', alpha=0.7)
+            
+            ax1.set_xlabel('log(1/箱サイズ)', fontsize=11)
+            ax1.set_ylabel('log(白ピクセルを含む箱の数)', fontsize=11)
+            
+            # タイトルを予測の有無で変更
+            title_parts = [f'実測: {fractal_d:.3f}']
+            if corrected_fractal_d is not None:
+                title_parts.append(f'AI補正: {corrected_fractal_d:.3f}')
+            if pred is not None and 'fractal' in pred:
+                title_parts.append(f'従来AI: {pred["fractal"]:.3f}')
+            
+            ax1.set_title(f'Box-Counting法によるフラクタル次元解析\n{" / ".join(title_parts)}', 
+                        fontsize=12, fontweight='bold')
+            
+            ax1.grid(True, alpha=0.3)
+            ax1.legend(loc='best', fontsize=10)
+            st.pyplot(fig1, use_container_width=True)
+            plt.close(fig1)  # メモリ解放
 
-            # 円グラフ: 空間占有率
-            fig2, ax2 = plt.subplots()
-            ax2.pie([occupancy, 1-occupancy], labels=['占有','非占有'], autopct='%1.1f%%')
-            ax2.set_title('空間占有率')
-            st.pyplot(fig2)
+            # 円グラフ: 空間占有率（白ピクセルと黒ピクセル）
+            st.subheader('ピクセル分布')
+            fig2, ax2 = plt.subplots(dpi=80)  # DPI下げて高速化
+            # 白ピクセル（occupancy）を白色、黒ピクセル（1-occupancy）を黒色で表示
+            colors = ['white', 'black']
+            wedges, texts, autotexts = ax2.pie(
+                [occupancy, 1-occupancy], 
+                labels=['白ピクセル', '黒ピクセル'], 
+                autopct='%1.1f%%',
+                colors=colors,
+                startangle=90,
+                textprops={'color': 'black', 'weight': 'bold'}
+            )
+            # パーセンテージの文字色を調整（白い部分は黒文字、黒い部分は白文字）
+            autotexts[0].set_color('black')  # 白ピクセル部分は黒文字
+            autotexts[1].set_color('white')  # 黒ピクセル部分は白文字
+            # エッジを追加して見やすく
+            for wedge in wedges:
+                wedge.set_edgecolor('gray')
+                wedge.set_linewidth(1.5)
+            ax2.set_title('ピクセル分布（二値化画像）')
+            st.pyplot(fig2, use_container_width=True)
+            plt.close(fig2)  # メモリ解放
 
-            # 予測と実測の比較プロット（あれば）
+            # AI予測結果の詳細表示（あれば）
             if pred is not None:
-                st.write('学習モデルの予測:')
-                st.write(pred)
-                # 比較フラクタル次元グラフ
-                fig3, ax3 = plt.subplots()
-                ax3.plot([0,1],[fractal_d, pred['fractal']], marker='o')
-                ax3.set_xticks([0,1]); ax3.set_xticklabels(['実測','予測'])
-                ax3.set_ylabel('フラクタル次元')
-                st.pyplot(fig3)
-                # 比較占有率
+                st.subheader('AI学習モデルによる予測')
+                col_pred1, col_pred2 = st.columns(2)
+                with col_pred1:
+                    st.metric(
+                        label="フラクタル次元",
+                        value=f"{fractal_d:.4f}",
+                        delta=f"予測との差: {(fractal_d - pred['fractal']):.4f}"
+                    )
+                with col_pred2:
+                    if pred['occupancy'] is not None:
+                        st.metric(
+                            label="空間占有率",
+                            value=f"{occupancy*100:.2f}%",
+                            delta=f"予測との差: {(occupancy - pred['occupancy'])*100:.2f}%"
+                        )
+                
+                # 占有率の比較グラフ（予測がある場合のみ）
                 if pred['occupancy'] is not None:
-                    fig4, ax4 = plt.subplots()
-                    ax4.plot([0,1],[occupancy, pred['occupancy']], marker='o')
+                    st.write('**占有率の比較**')
+                    fig4, ax4 = plt.subplots(dpi=80)
+                    ax4.plot([0,1],[occupancy, pred['occupancy']], marker='o', linewidth=2, markersize=8)
                     ax4.set_xticks([0,1]); ax4.set_xticklabels(['実測','予測'])
                     ax4.set_ylabel('占有率')
-                    st.pyplot(fig4)
+                    st.pyplot(fig4, use_container_width=True)
+                    plt.close(fig4)
 
             # 結果レコード作成
             rec = {
