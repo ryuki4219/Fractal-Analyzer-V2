@@ -36,16 +36,27 @@ import matplotlib.pyplot as plt
 from skimage import filters, color
 from skimage.feature import canny
 
+# matplotlibで日本語フォントを設定（文字化け対策）
+import matplotlib
+matplotlib.rcParams['font.family'] = ['MS Gothic', 'Yu Gothic', 'Meiryo', 'sans-serif']
+matplotlib.rcParams['axes.unicode_minus'] = False  # マイナス記号の文字化け対策
+
 # --- ユーティリティ関数 -------------------------------------------------
 
-def load_image_bytes(file) -> np.ndarray:
-    # Streamlit の UploadedFile から BGR(OpenCV) 画像を返す
-    bytes_data = file.read()
+@st.cache_data
+def load_image_from_bytes(bytes_data: bytes) -> np.ndarray:
+    # バイトデータから BGR(OpenCV) 画像を返す（キャッシュ対応）
     img = Image.open(io.BytesIO(bytes_data)).convert('RGB')
     arr = np.array(img)[:, :, ::-1].copy()  # RGB->BGR
     return arr
 
+def load_image_bytes(file) -> np.ndarray:
+    # Streamlit の UploadedFile から BGR(OpenCV) 画像を返す
+    bytes_data = file.read()
+    return load_image_from_bytes(bytes_data)
 
+
+@st.cache_data
 def resize_image(img: np.ndarray, max_side: float):
     # 最長辺が max_side を超える場合リサイズする
     h, w = img.shape[:2]
@@ -58,6 +69,7 @@ def resize_image(img: np.ndarray, max_side: float):
     return img, scale
 
 
+@st.cache_data
 def binarize_image_gray(gray: np.ndarray, thresh: float):
     # thresh は 0..255 の実数値。ここでは固定閾値による二値化
     _, bw = cv2.threshold(gray.astype('uint8'), thresh, 255, cv2.THRESH_BINARY)
@@ -71,6 +83,7 @@ def adaptive_binarize(gray: np.ndarray):
     return bw
 
 
+@st.cache_data
 def boxcount_fractal_dim(bw: np.ndarray, sizes=None):
     # 白(255) を対象に箱ひき（box-counting法）でフラクタル次元を推定
     # bw: 二値画像（0 or 255）
@@ -78,11 +91,15 @@ def boxcount_fractal_dim(bw: np.ndarray, sizes=None):
     S = bw.shape
     if sizes is None:
         max_dim = max(S)
-        # 箱サイズは 2^k 系列で生成
-        sizes = np.array([2 ** i for i in range(int(np.log2(min(S))) - 0)])
-        sizes = sizes[sizes <= min(S)]
-        if len(sizes) < 3:
-            sizes = np.array([1,2,4,8])
+        min_dim = min(S)
+        # 箱サイズは 2^k 系列で生成（最小3ポイント確保）
+        if min_dim >= 8:
+            sizes = np.array([2 ** i for i in range(1, int(np.log2(min_dim)) + 1)])
+        else:
+            sizes = np.array([1, 2, 4])
+        sizes = sizes[sizes <= min_dim]
+        if len(sizes) < 2:
+            sizes = np.array([1, 2, 4, 8])
     counts = []
     for size in sizes:
         # 画像を size x size のブロックに分割して、白が含まれるブロックを数える
@@ -101,9 +118,18 @@ def boxcount_fractal_dim(bw: np.ndarray, sizes=None):
     counts = np.array(counts, dtype=float)
     # fractal dimension D is slope of log(count) vs log(1/size)
     # linear regression via least squares
-    with np.errstate(divide='ignore'):
-        logs = np.log(counts)
-        loginv = np.log(1.0 / sizes)
+    # ゼロや負の値を除外
+    valid_mask = (counts > 0) & (sizes > 0)
+    if np.sum(valid_mask) < 2:
+        # 有効なデータポイントが2つ未満の場合はフラクタル次元を計算できない
+        return 0.0, sizes, counts
+    
+    sizes_valid = sizes[valid_mask]
+    counts_valid = counts[valid_mask]
+    
+    logs = np.log(counts_valid)
+    loginv = np.log(1.0 / sizes_valid)
+    
     # 単純な線形回帰
     A = np.vstack([loginv, np.ones_like(loginv)]).T
     try:
@@ -113,6 +139,7 @@ def boxcount_fractal_dim(bw: np.ndarray, sizes=None):
     return float(m), sizes, counts
 
 
+@st.cache_data
 def compute_spatial_occupancy(bw: np.ndarray):
     # 白（255）が占める割合
     total = bw.size
@@ -120,6 +147,7 @@ def compute_spatial_occupancy(bw: np.ndarray):
     return float(white / total)
 
 
+@st.cache_data
 def extract_features_from_image(img_bgr: np.ndarray, bw: np.ndarray, fractal_dim: float):
     # シンプルな特徴量ベクトル
     gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
@@ -139,6 +167,7 @@ EXCEL_PATH = 'results.xlsx'
 TRAIN_CSV = 'train_data.csv'
 
 # モデルロード関数
+@st.cache_resource
 def load_models():
     models = {}
     if os.path.exists(MODEL_PATH) and os.path.exists(SCALER_PATH):
@@ -175,6 +204,7 @@ def append_to_train_csv(features, y_reg, is_valid):
         df.to_csv(TRAIN_CSV, index=False)
 
 
+@st.cache_data(ttl=1)  # 1秒間キャッシュ（新しいデータが追加される可能性があるため短め）
 def load_train_data():
     if os.path.exists(TRAIN_CSV):
         return pd.read_csv(TRAIN_CSV)
@@ -264,45 +294,128 @@ with col1:
                 except Exception as e:
                     st.write('予測中にエラーが発生しました:', e)
 
-            # 結果表示
-            st.write(f'- フラクタル次元: {fractal_d:.4f}')
-            st.write(f'- 空間占有率: {occupancy*100:.2f}%')
+            # 結果表示 - 見やすいメトリクス形式で表示
+            st.subheader('📊 解析結果')
+            
+            # メトリクスを2列で表示
+            metric_col1, metric_col2 = st.columns(2)
+            with metric_col1:
+                st.metric(
+                    label="フラクタル次元",
+                    value=f"{fractal_d:.4f}",
+                    help="フラクタル次元は画像の複雑さを表す指標です"
+                )
+            with metric_col2:
+                st.metric(
+                    label="空間占有率（白ピクセル）",
+                    value=f"{occupancy*100:.2f}%",
+                    help="画像全体における白ピクセルの割合です"
+                )
+            
+            # 予測値がある場合は追加表示
+            if pred is not None:
+                st.write("**🤖 機械学習モデルによる予測値:**")
+                pred_col1, pred_col2 = st.columns(2)
+                with pred_col1:
+                    delta_fractal = fractal_d - pred['fractal'] if pred['fractal'] is not None else None
+                    st.metric(
+                        label="予測フラクタル次元",
+                        value=f"{pred['fractal']:.4f}" if pred['fractal'] is not None else "N/A",
+                        delta=f"{delta_fractal:.4f}" if delta_fractal is not None else None,
+                        delta_color="off"
+                    )
+                with pred_col2:
+                    if pred['occupancy'] is not None:
+                        delta_occupancy = (occupancy - pred['occupancy']) * 100
+                        st.metric(
+                            label="予測空間占有率",
+                            value=f"{pred['occupancy']*100:.2f}%",
+                            delta=f"{delta_occupancy:.2f}%" if delta_occupancy is not None else None,
+                            delta_color="off"
+                        )
+            
+            # 異常検知結果
             if fail_flag:
-                st.warning('自動検知: 失敗と判定されました。理由: ' + ';'.join(fail_reasons))
+                st.warning('⚠️ 自動検知: 失敗と判定されました。理由: ' + '; '.join(fail_reasons))
             else:
-                st.success('自動検知: 正常と判定')
+                st.success('✅ 自動検知: 正常と判定')
 
-            # グラフ: フラクタル次元の折れ線（sizes vs counts から可視化）
-            fig1, ax1 = plt.subplots()
-            ax1.plot(np.log(1.0/sizes), np.log(counts), marker='o')
-            ax1.set_xlabel('log(1/size)')
-            ax1.set_ylabel('log(count)')
-            ax1.set_title('箱ひきに基づくフラクタル次元推定（線形フィットの傾きが次元）')
-            st.pyplot(fig1)
+            st.divider()
 
-            # 円グラフ: 空間占有率
-            fig2, ax2 = plt.subplots()
-            ax2.pie([occupancy, 1-occupancy], labels=['占有','非占有'], autopct='%1.1f%%')
-            ax2.set_title('空間占有率')
-            st.pyplot(fig2)
+            # 元画像と二値化画像を並べて表示
+            col_img1, col_img2 = st.columns(2)
+            with col_img1:
+                st.subheader('元画像')
+                # BGR -> RGB に変換して表示
+                img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+                st.image(img_rgb, use_container_width=True)
+            with col_img2:
+                st.subheader('二値化画像')
+                st.image(bw, use_container_width=True, clamp=True)
+
+            # グラフ表示
+            st.subheader('📈 グラフ表示')
+            
+            # グラフを2列で表示
+            graph_col1, graph_col2 = st.columns(2)
+            
+            with graph_col1:
+                # グラフ: フラクタル次元の折れ線（sizes vs counts から可視化）
+                fig1, ax1 = plt.subplots()
+                ax1.plot(np.log(1.0/sizes), np.log(counts), marker='o', linewidth=2, markersize=8)
+                ax1.set_xlabel('log(1/size)')
+                ax1.set_ylabel('log(count)')
+                ax1.set_title('フラクタル次元解析グラフ')
+                ax1.grid(True, alpha=0.3)
+                st.pyplot(fig1)
+                plt.close(fig1)
+
+            with graph_col2:
+                # 円グラフ: 空間占有率
+                fig2, ax2 = plt.subplots()
+                # 白ピクセル（占有）と黒ピクセル（非占有）の割合
+                # 色を白と黒に対応させる
+                colors = ['white', 'black']
+                wedgeprops = {'edgecolor': 'gray', 'linewidth': 1}
+                ax2.pie([occupancy, 1-occupancy], 
+                       labels=['白ピクセル', '黒ピクセル'], 
+                       autopct='%1.1f%%',
+                       colors=colors,
+                       wedgeprops=wedgeprops,
+                       startangle=90)
+                ax2.set_title('空間占有率（白ピクセル vs 黒ピクセル）')
+                st.pyplot(fig2)
+                plt.close(fig2)
 
             # 予測と実測の比較プロット（あれば）
             if pred is not None:
-                st.write('学習モデルの予測:')
-                st.write(pred)
-                # 比較フラクタル次元グラフ
-                fig3, ax3 = plt.subplots()
-                ax3.plot([0,1],[fractal_d, pred['fractal']], marker='o')
-                ax3.set_xticks([0,1]); ax3.set_xticklabels(['実測','予測'])
-                ax3.set_ylabel('フラクタル次元')
-                st.pyplot(fig3)
-                # 比較占有率
-                if pred['occupancy'] is not None:
-                    fig4, ax4 = plt.subplots()
-                    ax4.plot([0,1],[occupancy, pred['occupancy']], marker='o')
-                    ax4.set_xticks([0,1]); ax4.set_xticklabels(['実測','予測'])
-                    ax4.set_ylabel('占有率')
-                    st.pyplot(fig4)
+                st.subheader('🔍 予測 vs 実測の比較')
+                compare_col1, compare_col2 = st.columns(2)
+                
+                with compare_col1:
+                    # 比較フラクタル次元グラフ
+                    fig3, ax3 = plt.subplots()
+                    ax3.plot([0,1],[fractal_d, pred['fractal']], marker='o', linewidth=2, markersize=10)
+                    ax3.set_xticks([0,1])
+                    ax3.set_xticklabels(['実測','予測'])
+                    ax3.set_ylabel('フラクタル次元')
+                    ax3.set_title('フラクタル次元の比較')
+                    ax3.grid(True, alpha=0.3)
+                    st.pyplot(fig3)
+                    plt.close(fig3)
+                
+                with compare_col2:
+                    # 比較占有率
+                    if pred['occupancy'] is not None:
+                        fig4, ax4 = plt.subplots()
+                        ax4.plot([0,1],[occupancy, pred['occupancy']], marker='o', linewidth=2, markersize=10)
+                        ax4.set_xticks([0,1])
+                        ax4.set_xticklabels(['実測','予測'])
+                        ax4.set_ylabel('占有率')
+                        ax4.set_title('空間占有率の比較')
+                        ax4.grid(True, alpha=0.3)
+                        st.pyplot(fig4)
+                    plt.close(fig4)
 
             # 結果レコード作成
             rec = {
