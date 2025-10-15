@@ -28,6 +28,8 @@ import cv2
 from PIL import Image
 import io
 import os
+import base64
+from datetime import datetime
 import joblib
 from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier
 from sklearn.preprocessing import StandardScaler
@@ -76,11 +78,149 @@ def binarize_image_gray(gray: np.ndarray, thresh: float):
     return bw
 
 
-def adaptive_binarize(gray: np.ndarray):
-    # ガウシアン適応閾値（サンプルとして）
+def adaptive_binarize(gray: np.ndarray, block_size: int = 11, c: int = 2):
+    # ガウシアン適応閾値（ブロックサイズは奇数）
+    if block_size % 2 == 0:
+        block_size += 1
+    block_size = max(3, block_size)
     bw = cv2.adaptiveThreshold(gray.astype('uint8'), 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                               cv2.THRESH_BINARY, 11, 2)
+                               cv2.THRESH_BINARY, block_size, c)
     return bw
+
+
+def apply_gamma_correction(img: np.ndarray, gamma: float) -> np.ndarray:
+    if gamma <= 0:
+        return img
+    inv_gamma = 1.0 / gamma
+    table = np.array([((i / 255.0) ** inv_gamma) * 255 for i in np.arange(256)]).astype('uint8')
+    return cv2.LUT(img, table)
+
+
+def apply_brightness_offset(img: np.ndarray, beta: float) -> np.ndarray:
+    if beta == 0:
+        return img
+    adjusted = cv2.convertScaleAbs(img, alpha=1.0, beta=beta)
+    return adjusted
+
+
+def apply_saturation_adjustment(img: np.ndarray, factor: float) -> np.ndarray:
+    if np.isclose(factor, 1.0):
+        return img
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV).astype(np.float32)
+    hsv[:, :, 1] = np.clip(hsv[:, :, 1] * factor, 0, 255)
+    adjusted = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
+    return adjusted
+
+
+def image_to_base64_png(img: np.ndarray) -> str:
+    success, buffer = cv2.imencode('.png', img)
+    if not success:
+        return ''
+    return base64.b64encode(buffer).decode('utf-8')
+
+
+def build_html_report(run_timestamp: datetime, run_settings: dict, summary_df: pd.DataFrame, detail_records: list[dict]) -> str:
+    timestamp_str = run_timestamp.strftime('%Y-%m-%d %H:%M:%S')
+    summary_html = summary_df.to_html(index=False, classes='summary-table', float_format=lambda x: f'{x:.4f}' if isinstance(x, (int, float, np.floating)) else x)
+
+    styles = """
+    <style>
+    body { font-family: 'Segoe UI', sans-serif; margin: 2rem; background-color: #f9fafb; color: #1f2933; }
+    h1 { color: #0f4c81; }
+    h2 { color: #1f2933; margin-top: 2rem; }
+    .meta, .summary { background: #ffffff; padding: 1.5rem; border-radius: 12px; box-shadow: 0 10px 25px rgba(15,76,129,0.08); margin-bottom: 2rem; }
+    .meta ul { list-style: none; padding-left: 0; }
+    .meta li { margin-bottom: 0.4rem; }
+    .images { display: flex; flex-wrap: wrap; gap: 1rem; }
+    .images figure { flex: 1 1 200px; text-align: center; background: #f1f5f9; padding: 1rem; border-radius: 12px; }
+    .images img { max-width: 100%; border-radius: 8px; box-shadow: 0 10px 20px rgba(15,76,129,0.15); }
+    .badge { display: inline-block; padding: 0.2rem 0.6rem; border-radius: 999px; font-size: 0.85rem; margin-right: 0.4rem; }
+    .badge-ok { background: #d1fae5; color: #047857; }
+    .badge-ng { background: #fee2e2; color: #b91c1c; }
+    .summary-table { width: 100%; border-collapse: collapse; }
+    .summary-table th, .summary-table td { border: 1px solid #d1d5db; padding: 0.6rem; text-align: center; }
+    .summary-table th { background: #e5f0ff; }
+    .card { background: #ffffff; padding: 1.5rem; border-radius: 12px; box-shadow: 0 12px 30px rgba(15,76,129,0.10); margin-bottom: 2rem; }
+    .metrics { margin-top: 1rem; }
+    .metrics table { width: 100%; border-collapse: collapse; }
+    .metrics th, .metrics td { border: 1px solid #e5e7eb; padding: 0.5rem; }
+    .metrics th { background: #f3f4f6; text-align: left; }
+    footer { text-align: center; color: #6b7280; margin-top: 3rem; font-size: 0.85rem; }
+    </style>
+    """
+
+    meta_items = ''.join(
+        f"<li><strong>{key}</strong>: {value}</li>" for key, value in run_settings.items()
+    )
+
+    detail_sections = []
+    for record in detail_records:
+        status_badge = '<span class="badge badge-ok">正常</span>' if not record['fail_flag'] else '<span class="badge badge-ng">異常</span>'
+        reasons = record['fail_reasons'] if record['fail_reasons'] else '特記事項なし'
+        pred_fractal = record['pred_fractal'] if record['pred_fractal'] is not None else 'N/A'
+        pred_occupancy = record['pred_occupancy'] if record['pred_occupancy'] is not None else 'N/A'
+        detail_sections.append(f"""
+        <section class="card">
+            <h2>{record['filename']} {status_badge}</h2>
+            <div class="images">
+                <figure>
+                    <img src="data:image/png;base64,{record['original_b64']}" alt="Original">
+                    <figcaption>元画像（リサイズ後）</figcaption>
+                </figure>
+                <figure>
+                    <img src="data:image/png;base64,{record['processed_b64']}" alt="Preprocessed">
+                    <figcaption>前処理後画像</figcaption>
+                </figure>
+                <figure>
+                    <img src="data:image/png;base64,{record['binary_b64']}" alt="Binary">
+                    <figcaption>二値化画像</figcaption>
+                </figure>
+            </div>
+            <div class="metrics">
+                <table>
+                    <tr><th>フラクタル次元</th><td>{record['fractal']:.4f}</td></tr>
+                    <tr><th>空間占有率</th><td>{record['occupancy']*100:.2f}%</td></tr>
+                    <tr><th>予測フラクタル次元</th><td>{pred_fractal}</td></tr>
+                    <tr><th>予測空間占有率</th><td>{pred_occupancy}</td></tr>
+                    <tr><th>閾値方式</th><td>{record['threshold_mode']}</td></tr>
+                    <tr><th>閾値値</th><td>{record['threshold_value'] if record['threshold_value'] is not None else 'N/A'}</td></tr>
+                    <tr><th>適応閾値ブロックサイズ</th><td>{record['adaptive_block_size'] if record['adaptive_block_size'] is not None else 'N/A'}</td></tr>
+                    <tr><th>適応閾値C値</th><td>{record['adaptive_c'] if record['adaptive_c'] is not None else 'N/A'}</td></tr>
+                    <tr><th>輝度補正</th><td>{'ON' if record['gamma_applied'] else 'OFF'} / γ={record['gamma_value'] if record['gamma_value'] is not None else '1.0'} / β={record['brightness_offset'] if record['brightness_offset'] is not None else 0}</td></tr>
+                    <tr><th>彩度補正</th><td>{'ON' if record['saturation_applied'] else 'OFF'} / 倍率={record['saturation_factor'] if record['saturation_factor'] is not None else 1.0}</td></tr>
+                    <tr><th>メモ</th><td>{reasons}</td></tr>
+                </table>
+            </div>
+        </section>
+        """)
+
+    html = f"""
+    <!DOCTYPE html>
+    <html lang="ja">
+    <head>
+        <meta charset="UTF-8">
+        <title>フラクタル解析レポート</title>
+        {styles}
+    </head>
+    <body>
+        <h1>フラクタル解析レポート</h1>
+        <section class="meta">
+            <h2>解析メタ情報</h2>
+            <ul>
+                <li><strong>生成日時</strong>: {timestamp_str}</li>
+                {meta_items}
+            </ul>
+        </section>
+        <section class="summary">
+            <h2>解析結果サマリ</h2>
+            {summary_html}
+        </section>
+        {''.join(detail_sections)}
+        <footer>生成システム: フラクタル画像解析アプリ</footer>
+    </body>
+    </html>
+    """
+    return html
 
 
 @st.cache_data
@@ -216,20 +356,84 @@ def load_train_data():
 st.set_page_config(layout='wide', page_title='フラクタル画像解析アプリ')
 st.title('フラクタルを用いた画像解析アプリ')
 
-st.sidebar.header('設定')
-# 閾値入力: 数値入力とスライダーを両方用意
-thresh_mode = st.sidebar.selectbox('閾値入力方式', ['スライダー', '数値入力'])
-if thresh_mode == 'スライダー':
-    thresh_value = st.sidebar.slider('二値化閾値 (0-255)', min_value=0.0, max_value=255.0, value=128.0)
-else:
-    thresh_value = st.sidebar.number_input('二値化閾値 (0-255)', min_value=0.0, max_value=255.0, value=128.0, step=0.1)
+st.sidebar.header('入力と解析条件')
+uploaded_files = st.sidebar.file_uploader('画像ファイルを選択（複数可）', type=['png','jpg','jpeg','bmp','tif','tiff'], accept_multiple_files=True)
 
-# リサイズ上限: 数値とスライダー
-resize_mode = st.sidebar.selectbox('リサイズ方式', ['スライダー', '数値入力'])
-if resize_mode == 'スライダー':
-    max_side = st.sidebar.slider('リサイズ最大辺 (px, 0でリサイズ無効)', min_value=0.0, max_value=4000.0, value=1024.0)
+st.sidebar.markdown('---')
+st.sidebar.subheader('前処理（任意）')
+enable_brightness = st.sidebar.checkbox('輝度補正を有効化', value=False)
+if enable_brightness:
+    gamma_value = st.sidebar.slider('ガンマ値', min_value=0.10, max_value=3.0, value=1.0, step=0.05)
+    brightness_offset = st.sidebar.slider('明るさ調整 (β)', min_value=-100, max_value=100, value=0, step=1)
 else:
-    max_side = st.sidebar.number_input('リサイズ最大辺 (px, 0でリサイズ無効)', min_value=0.0, max_value=10000.0, value=1024.0)
+    gamma_value = 1.0
+    brightness_offset = 0
+
+enable_saturation = st.sidebar.checkbox('彩度補正を有効化', value=False)
+if enable_saturation:
+    saturation_factor = st.sidebar.slider('彩度倍率', min_value=0.5, max_value=2.0, value=1.0, step=0.05)
+else:
+    saturation_factor = 1.0
+
+st.sidebar.markdown('---')
+st.sidebar.subheader('二値化・解析条件')
+
+if 'threshold_value' not in st.session_state:
+    st.session_state['threshold_value'] = 128.0
+if 'threshold_slider' not in st.session_state:
+    st.session_state['threshold_slider'] = st.session_state['threshold_value']
+if 'threshold_number' not in st.session_state:
+    st.session_state['threshold_number'] = st.session_state['threshold_value']
+if 'max_side_value' not in st.session_state:
+    st.session_state['max_side_value'] = 1024.0
+if 'max_side_slider' not in st.session_state:
+    st.session_state['max_side_slider'] = st.session_state['max_side_value']
+if 'max_side_number' not in st.session_state:
+    st.session_state['max_side_number'] = st.session_state['max_side_value']
+if 'adaptive_block_size' not in st.session_state:
+    st.session_state['adaptive_block_size'] = 11
+if 'adaptive_c' not in st.session_state:
+    st.session_state['adaptive_c'] = 2
+
+
+def _sync_threshold_from_slider():
+    st.session_state['threshold_value'] = float(st.session_state['threshold_slider'])
+    st.session_state['threshold_number'] = st.session_state['threshold_value']
+
+
+def _sync_threshold_from_number():
+    st.session_state['threshold_value'] = float(st.session_state['threshold_number'])
+    st.session_state['threshold_slider'] = st.session_state['threshold_value']
+
+
+def _sync_max_side_from_slider():
+    st.session_state['max_side_value'] = float(st.session_state['max_side_slider'])
+    st.session_state['max_side_number'] = st.session_state['max_side_value']
+
+
+def _sync_max_side_from_number():
+    st.session_state['max_side_value'] = float(st.session_state['max_side_number'])
+    st.session_state['max_side_slider'] = st.session_state['max_side_value']
+
+
+binarize_mode = st.sidebar.radio('二値化方式', ['固定閾値', '適応閾値'], index=0)
+
+if binarize_mode == '固定閾値':
+    st.sidebar.slider('二値化閾値 (スライダー)', min_value=0.0, max_value=255.0, key='threshold_slider', value=float(st.session_state['threshold_value']), step=1.0, on_change=_sync_threshold_from_slider)
+    st.sidebar.number_input('二値化閾値 (数値入力)', min_value=0.0, max_value=255.0, key='threshold_number', step=0.1, value=st.session_state['threshold_value'], on_change=_sync_threshold_from_number)
+    thresh_value = float(st.session_state['threshold_value'])
+    adaptive_block_size = None
+    adaptive_c = None
+else:
+    adaptive_block_size = st.sidebar.slider('適応閾値ブロックサイズ (奇数)', min_value=3, max_value=51, step=2, value=int(st.session_state['adaptive_block_size']))
+    st.session_state['adaptive_block_size'] = adaptive_block_size
+    adaptive_c = st.sidebar.slider('適応閾値 C 値', min_value=-20, max_value=20, value=int(st.session_state['adaptive_c']))
+    st.session_state['adaptive_c'] = adaptive_c
+    thresh_value = None
+
+st.sidebar.slider('リサイズ最大辺 (スライダー)', min_value=0.0, max_value=6000.0, key='max_side_slider', value=float(st.session_state['max_side_value']), step=10.0, on_change=_sync_max_side_from_slider)
+st.sidebar.number_input('リサイズ最大辺 (数値入力)', min_value=0.0, max_value=10000.0, key='max_side_number', step=10.0, value=st.session_state['max_side_value'], on_change=_sync_max_side_from_number)
+max_side = float(st.session_state['max_side_value'])
 
 st.sidebar.markdown('---')
 # 学習ボタン
@@ -237,104 +441,123 @@ do_train_now = st.sidebar.button('学習を実行（保存済みデータで再�
 # モデルロード
 models = load_models()
 
-# ファイル選択: 複数ファイルアップロードでフォルダ内一括解析に対応
-uploaded_files = st.file_uploader('画像ファイルを選択（複数可）', type=['png','jpg','jpeg','bmp','tif','tiff'], accept_multiple_files=True)
-
 # 解析/学習用の表示領域
 col1, col2 = st.columns([2,1])
 
 with col1:
     st.header('解析結果')
     if uploaded_files is not None and len(uploaded_files) > 0:
-        results_list = []
-        predictions = []
+        results_list = []  # Excel/学習データ用
+        summary_records = []  # 表示・保存用
+        detail_records = []  # HTMLレポート用
+        run_timestamp = datetime.now()
+
         for file in uploaded_files:
-            st.write('ファイル:', file.name)
-            img_bgr = load_image_bytes(file)
-            img_bgr, scale = resize_image(img_bgr, max_side)
-            gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+            st.subheader(f'ファイル: {file.name}')
+            file_bytes = file.getvalue()
+            if file_bytes is None or len(file_bytes) == 0:
+                st.error('ファイルを読み込めませんでした。')
+                continue
 
-            # 二値化 (固定閾値)
-            bw = binarize_image_gray(gray, thresh_value)
+            original_bgr = load_image_from_bytes(file_bytes)
+            resized_bgr, scale = resize_image(original_bgr, max_side)
 
-            # フラクタル次元計算
+            processed_bgr = resized_bgr.copy()
+            preprocessing_steps = []
+            if enable_brightness:
+                processed_bgr = apply_gamma_correction(processed_bgr, gamma_value)
+                processed_bgr = apply_brightness_offset(processed_bgr, brightness_offset)
+                preprocessing_steps.append(f'輝度補正 (γ={gamma_value:.2f}, β={brightness_offset})')
+            if enable_saturation:
+                processed_bgr = apply_saturation_adjustment(processed_bgr, saturation_factor)
+                preprocessing_steps.append(f'彩度補正 (×{saturation_factor:.2f})')
+            if not preprocessing_steps:
+                preprocessing_steps.append('前処理なし')
+
+            gray = cv2.cvtColor(processed_bgr, cv2.COLOR_BGR2GRAY)
+
+            if binarize_mode == '固定閾値':
+                bw = binarize_image_gray(gray, thresh_value)
+                threshold_info = f'固定閾値: {thresh_value:.2f}'
+                adaptive_bs = None
+                adaptive_c_value = None
+            else:
+                adaptive_bs = adaptive_block_size
+                adaptive_c_value = adaptive_c
+                bw = adaptive_binarize(gray, adaptive_bs, adaptive_c_value)
+                threshold_info = f'適応閾値: block={adaptive_bs}, C={adaptive_c_value}'
+
             fractal_d, sizes, counts = boxcount_fractal_dim(bw)
             occupancy = compute_spatial_occupancy(bw)
 
-            # 異常検知: 極端な占有率や二値化がほぼ全白/全黒なら失敗扱い
-            white_ratio = occupancy
             fail_flag = False
-            fail_reasons = []
-            if white_ratio < 0.01:
+            fail_reasons: list[str] = []
+            if occupancy < 0.01:
                 fail_flag = True
                 fail_reasons.append('ほとんど白が無い(占有率 <1%)')
-            if white_ratio > 0.99:
+            if occupancy > 0.99:
                 fail_flag = True
                 fail_reasons.append('ほとんど白で埋まっている(占有率 >99%)')
-            # フラクタル次元の現実的レンジチェック
-            if not ( -5.0 < fractal_d < 5.0 ):  # 様々な画像での目安
+            if not (-5.0 < fractal_d < 5.0):
                 fail_flag = True
                 fail_reasons.append(f'フラクタル次元が異常値:{fractal_d:.3f}')
 
-            # 特徴量抽出
-            feat = extract_features_from_image(img_bgr, bw, fractal_d)
+            feat = extract_features_from_image(processed_bgr, bw, fractal_d)
 
-            # 予測が可能なら出力
             pred = None
             if 'reg' in models and 'scaler' in models:
                 try:
-                    Xs = models['scaler'].transform(feat.reshape(1,-1))
+                    Xs = models['scaler'].transform(feat.reshape(1, -1))
                     ypred = models['reg'].predict(Xs)[0]
-                    # reg は 2出力を想定している (fractal, occupancy)
-                    if isinstance(ypred, (list,tuple,np.ndarray)) and len(ypred) >= 2:
+                    if isinstance(ypred, (list, tuple, np.ndarray)) and len(ypred) >= 2:
                         pred = {'fractal': float(ypred[0]), 'occupancy': float(ypred[1])}
                     else:
-                        # 単一出力の場合はフラクタルのみ
                         pred = {'fractal': float(ypred), 'occupancy': None}
                 except Exception as e:
-                    st.write('予測中にエラーが発生しました:', e)
+                    st.warning(f'予測中にエラーが発生しました: {e}')
 
-            # 結果表示 - 見やすいメトリクス形式で表示
+            st.caption('処理フロー: 画像入力 → 前処理 → 二値化 → フラクタル解析 → 可視化・保存')
+
             st.subheader('📊 解析結果')
-            
-            # メトリクスを2列で表示
             metric_col1, metric_col2 = st.columns(2)
             with metric_col1:
                 st.metric(
-                    label="フラクタル次元",
-                    value=f"{fractal_d:.4f}",
-                    help="フラクタル次元は画像の複雑さを表す指標です"
+                    label='フラクタル次元',
+                    value=f'{fractal_d:.4f}',
+                    help='フラクタル次元は画像パターンの複雑さを表す指標です'
                 )
             with metric_col2:
                 st.metric(
-                    label="空間占有率（白ピクセル）",
-                    value=f"{occupancy*100:.2f}%",
-                    help="画像全体における白ピクセルの割合です"
+                    label='空間占有率（白ピクセル）',
+                    value=f'{occupancy*100:.2f}%',
+                    help='白ピクセルが占める割合を示します'
                 )
-            
-            # 予測値がある場合は追加表示
+
             if pred is not None:
-                st.write("**🤖 機械学習モデルによる予測値:**")
+                st.write('**🤖 学習モデルの予測値**')
                 pred_col1, pred_col2 = st.columns(2)
                 with pred_col1:
-                    delta_fractal = fractal_d - pred['fractal'] if pred['fractal'] is not None else None
+                    delta_fractal = None if pred['fractal'] is None else fractal_d - pred['fractal']
                     st.metric(
-                        label="予測フラクタル次元",
-                        value=f"{pred['fractal']:.4f}" if pred['fractal'] is not None else "N/A",
-                        delta=f"{delta_fractal:.4f}" if delta_fractal is not None else None,
-                        delta_color="off"
+                        label='予測フラクタル次元',
+                        value=f"{pred['fractal']:.4f}" if pred['fractal'] is not None else 'N/A',
+                        delta=f'{delta_fractal:.4f}' if delta_fractal is not None else None,
+                        delta_color='off'
                     )
                 with pred_col2:
                     if pred['occupancy'] is not None:
                         delta_occupancy = (occupancy - pred['occupancy']) * 100
                         st.metric(
-                            label="予測空間占有率",
+                            label='予測空間占有率',
                             value=f"{pred['occupancy']*100:.2f}%",
-                            delta=f"{delta_occupancy:.2f}%" if delta_occupancy is not None else None,
-                            delta_color="off"
+                            delta=f'{delta_occupancy:.2f}%' if delta_occupancy is not None else None,
+                            delta_color='off'
                         )
-            
-            # 異常検知結果
+
+            preprocessing_text = '\n'.join([f'- {step}' for step in preprocessing_steps])
+            st.markdown(f'**前処理ステップ**\n{preprocessing_text}')
+            st.markdown(f'**二値化条件**: {threshold_info}')
+
             if fail_flag:
                 st.warning('⚠️ 自動検知: 失敗と判定されました。理由: ' + '; '.join(fail_reasons))
             else:
@@ -342,82 +565,62 @@ with col1:
 
             st.divider()
 
-            # 元画像と二値化画像を並べて表示
-            col_img1, col_img2 = st.columns(2)
+            col_img1, col_img2, col_img3 = st.columns(3)
             with col_img1:
-                st.subheader('元画像')
-                # BGR -> RGB に変換して表示
-                img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
-                st.image(img_rgb, use_container_width=True)
+                st.subheader('元画像（リサイズ後）')
+                st.image(cv2.cvtColor(resized_bgr, cv2.COLOR_BGR2RGB), use_container_width=True)
             with col_img2:
+                st.subheader('前処理後画像')
+                st.image(cv2.cvtColor(processed_bgr, cv2.COLOR_BGR2RGB), use_container_width=True)
+            with col_img3:
                 st.subheader('二値化画像')
                 st.image(bw, use_container_width=True, clamp=True)
 
-            # グラフ表示
             st.subheader('📈 グラフ表示')
-            
-            # グラフを2列で表示
             graph_col1, graph_col2 = st.columns(2)
-            
             with graph_col1:
-                # グラフ: フラクタル次元の折れ線（sizes vs counts から可視化）
                 fig1, ax1 = plt.subplots()
-                ax1.plot(np.log(1.0/sizes), np.log(counts), marker='o', linewidth=2, markersize=8)
+                ax1.plot(np.log(1.0 / sizes), np.log(counts), marker='o', linewidth=2, markersize=8)
                 ax1.set_xlabel('log(1/size)')
                 ax1.set_ylabel('log(count)')
                 ax1.set_title('フラクタル次元解析グラフ')
                 ax1.grid(True, alpha=0.3)
                 st.pyplot(fig1)
                 plt.close(fig1)
-
             with graph_col2:
-                # 円グラフ: 空間占有率
                 fig2, ax2 = plt.subplots()
-                # 白ピクセル（占有）と黒ピクセル（非占有）の割合
-                # 色を白と黒に対応させる
                 colors = ['white', 'black']
                 wedgeprops = {'edgecolor': 'gray', 'linewidth': 1}
-                ax2.pie([occupancy, 1-occupancy], 
-                       labels=['白ピクセル', '黒ピクセル'], 
-                       autopct='%1.1f%%',
-                       colors=colors,
-                       wedgeprops=wedgeprops,
-                       startangle=90)
+                ax2.pie([occupancy, 1 - occupancy], labels=['白ピクセル', '黒ピクセル'], autopct='%1.1f%%', colors=colors, wedgeprops=wedgeprops, startangle=90)
                 ax2.set_title('空間占有率（白ピクセル vs 黒ピクセル）')
                 st.pyplot(fig2)
                 plt.close(fig2)
 
-            # 予測と実測の比較プロット（あれば）
             if pred is not None:
                 st.subheader('🔍 予測 vs 実測の比較')
                 compare_col1, compare_col2 = st.columns(2)
-                
                 with compare_col1:
-                    # 比較フラクタル次元グラフ
                     fig3, ax3 = plt.subplots()
-                    ax3.plot([0,1],[fractal_d, pred['fractal']], marker='o', linewidth=2, markersize=10)
-                    ax3.set_xticks([0,1])
-                    ax3.set_xticklabels(['実測','予測'])
+                    ax3.plot([0, 1], [fractal_d, pred['fractal']], marker='o', linewidth=2, markersize=10)
+                    ax3.set_xticks([0, 1])
+                    ax3.set_xticklabels(['実測', '予測'])
                     ax3.set_ylabel('フラクタル次元')
                     ax3.set_title('フラクタル次元の比較')
                     ax3.grid(True, alpha=0.3)
                     st.pyplot(fig3)
                     plt.close(fig3)
-                
                 with compare_col2:
-                    # 比較占有率
                     if pred['occupancy'] is not None:
                         fig4, ax4 = plt.subplots()
-                        ax4.plot([0,1],[occupancy, pred['occupancy']], marker='o', linewidth=2, markersize=10)
-                        ax4.set_xticks([0,1])
-                        ax4.set_xticklabels(['実測','予測'])
+                        ax4.plot([0, 1], [occupancy, pred['occupancy']], marker='o', linewidth=2, markersize=10)
+                        ax4.set_xticks([0, 1])
+                        ax4.set_xticklabels(['実測', '予測'])
                         ax4.set_ylabel('占有率')
                         ax4.set_title('空間占有率の比較')
                         ax4.grid(True, alpha=0.3)
                         st.pyplot(fig4)
-                    plt.close(fig4)
+                        plt.close(fig4)
 
-            # 結果レコード作成
             rec = {
                 'filename': file.name,
                 'fractal': fractal_d,
@@ -428,16 +631,75 @@ with col1:
             }
             results_list.append(rec)
 
-            # 学習データとして自動追加（検知した失敗は is_valid=0 として添加）
-            append_to_train_csv(feat, {'fractal':fractal_d, 'occupancy':occupancy}, not fail_flag)
+            summary_records.append({
+                'ファイル名': file.name,
+                'フラクタル次元': fractal_d,
+                '空間占有率(%)': occupancy * 100,
+                '予測フラクタル次元': rec['pred_fractal'],
+                '予測空間占有率(%)': rec['pred_occupancy'] * 100 if rec['pred_occupancy'] is not None else None,
+                '閾値方式': binarize_mode,
+                '閾値値': thresh_value if thresh_value is not None else None,
+                '適応ブロックサイズ': adaptive_bs,
+                '適応C値': adaptive_c_value,
+                'リサイズ最大辺': max_side,
+                '輝度補正': 'ON' if enable_brightness else 'OFF',
+                '彩度補正': 'ON' if enable_saturation else 'OFF',
+                '異常判定': '正常' if not fail_flag else '失敗',
+                '異常理由': '; '.join(fail_reasons) if fail_reasons else ''
+            })
 
-        # 複数ファイル時、Excelにまとめて書き込み（append）
+            detail_records.append({
+                'filename': file.name,
+                'fractal': fractal_d,
+                'occupancy': occupancy,
+                'pred_fractal': rec['pred_fractal'],
+                'pred_occupancy': rec['pred_occupancy'],
+                'fail_flag': fail_flag,
+                'fail_reasons': '; '.join(fail_reasons) if fail_reasons else '',
+                'threshold_mode': binarize_mode,
+                'threshold_value': thresh_value,
+                'adaptive_block_size': adaptive_bs,
+                'adaptive_c': adaptive_c_value,
+                'gamma_applied': enable_brightness,
+                'gamma_value': gamma_value if enable_brightness else None,
+                'brightness_offset': brightness_offset if enable_brightness else None,
+                'saturation_applied': enable_saturation,
+                'saturation_factor': saturation_factor if enable_saturation else None,
+                'original_b64': image_to_base64_png(resized_bgr),
+                'processed_b64': image_to_base64_png(processed_bgr),
+                'binary_b64': image_to_base64_png(bw)
+            })
+
+            append_to_train_csv(feat, {'fractal': fractal_d, 'occupancy': occupancy}, not fail_flag)
+
+            st.markdown('---')
+
+        if summary_records:
+            summary_df = pd.DataFrame(summary_records)
+            st.subheader('📋 解析サマリ（数値一覧）')
+            st.dataframe(summary_df, use_container_width=True)
+
+            csv_data = summary_df.to_csv(index=False).encode('utf-8-sig')
+            csv_filename = f'fractal_results_{run_timestamp.strftime("%Y%m%d_%H%M%S")}.csv'
+            st.download_button('CSVとして保存', data=csv_data, file_name=csv_filename, mime='text/csv')
+
+            run_settings = {
+                '二値化方式': binarize_mode,
+                '固定閾値': f'{thresh_value:.2f}' if thresh_value is not None else 'N/A',
+                '適応ブロックサイズ': adaptive_block_size if binarize_mode == '適応閾値' else 'N/A',
+                '適応C値': adaptive_c if binarize_mode == '適応閾値' else 'N/A',
+                'リサイズ最大辺(px)': max_side,
+                '輝度補正': 'ON' if enable_brightness else 'OFF',
+                '彩度補正': 'ON' if enable_saturation else 'OFF'
+            }
+            html_report = build_html_report(run_timestamp, run_settings, summary_df, detail_records)
+            html_filename = f'fractal_report_{run_timestamp.strftime("%Y%m%d_%H%M%S")}.html'
+            st.download_button('HTMLレポートを作成', data=html_report.encode('utf-8'), file_name=html_filename, mime='text/html')
+
         if len(results_list) >= 2:
             df_results = pd.DataFrame(results_list)
             if os.path.exists(EXCEL_PATH):
-                # 既存ファイルに追記
                 with pd.ExcelWriter(EXCEL_PATH, engine='openpyxl', mode='a', if_sheet_exists='overlay') as writer:
-                    # 新しいシートとしてタイムスタンプで保存
                     sheet_name = pd.Timestamp.now().strftime('run_%Y%m%d_%H%M%S')
                     df_results.to_excel(writer, sheet_name=sheet_name, index=False)
                 st.info(f'解析結果を既存Excel ({EXCEL_PATH}) に追記しました。')
@@ -445,7 +707,6 @@ with col1:
                 df_results.to_excel(EXCEL_PATH, sheet_name='run', index=False)
                 st.info(f'解析結果を新規Excel ({EXCEL_PATH}) に保存しました。')
 
-        # 学習件数の表示
         train_df = load_train_data()
         if train_df is not None:
             st.sidebar.write(f'学習データ件数: {len(train_df)}')
