@@ -1,12 +1,25 @@
 @echo off
-echo ========================================
-echo フラクタル画像解析アプリを起動します
-echo ========================================
+chcp 65001 > nul
+
 echo.
-echo ブラウザが自動的に開きます...
-echo もし開かない場合は、以下のURLにアクセスしてください:
-echo http://localhost:8501
+echo [Start] Fractal Analyzer V2
 echo.
-echo アプリを終了するには、このウィンドウでCtrl+Cを押してください
+
+taskkill /F /IM streamlit.exe > nul 2>&1
+taskkill /F /IM python.exe /FI "WINDOWTITLE eq *streamlit*" > nul 2>&1
+
+if exist .venv\Scripts\activate.bat (
+    call .venv\Scripts\activate.bat
+)
+
+echo Opening browser...
+echo URL: http://localhost:8501
 echo.
-streamlit run fractal_app.py
+start http://localhost:8501
+streamlit run fractal_app.py --server.port 8501 --server.headless true
+
+if %errorlevel% neq 0 (
+    echo.
+    echo [ERROR] Failed to start.
+    pause
+)
