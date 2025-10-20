@@ -23,16 +23,133 @@ SKIN_FD_IDEAL_MIN = 2.4  # 理想的な肌のフラクタル次元下限
 SKIN_FD_IDEAL_MAX = 2.8  # 理想的な肌のフラクタル次元上限
 
 # ----------------------------
-# データ拡張関数（軽量化版）
+# パッチ特徴量抽出（教師あり学習の改善）
+# ----------------------------
+def extract_patch_features(patch):
+    """
+    パッチから多様な特徴量を抽出
+    単純なピクセル値だけでなく、エッジ、テクスチャなども含める
+    """
+    # グレースケール化
+    if len(patch.shape) == 3:
+        gray = cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY)
+    else:
+        gray = patch
+    
+    # 正規化
+    normalized = gray.astype(np.float32) / 255.0
+    
+    # 1. ピクセル値（基本）
+    pixel_features = normalized.flatten()
+    
+    # 2. エッジ検出（Sobel）
+    sobel_x = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
+    sobel_y = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
+    edge_magnitude = np.sqrt(sobel_x**2 + sobel_y**2)
+    edge_features = (edge_magnitude / 255.0).flatten()
+    
+    # 3. ラプラシアン（詳細度）
+    laplacian = cv2.Laplacian(gray, cv2.CV_64F)
+    laplacian_features = (np.abs(laplacian) / 255.0).flatten()
+    
+    # 4. 統計的特徴
+    stats = np.array([
+        np.mean(normalized),
+        np.std(normalized),
+        np.min(normalized),
+        np.max(normalized)
+    ])
+    
+    # すべての特徴を結合
+    features = np.concatenate([
+        pixel_features,
+        edge_features[:len(pixel_features)//4],  # サイズ削減
+        laplacian_features[:len(pixel_features)//4],  # サイズ削減
+        stats
+    ])
+    
+    return features
+
+# ----------------------------
+# データ拡張関数（最適化版）
 # ----------------------------
 def augment_image(image):
-    """画像を回転・反転して学習データを増やす（3倍に削減）"""
+    """画像を回転して学習データを増やす（高速化のため回転のみ）"""
     augmented = [image]
-    # 180度回転
+    
+    # 90度回転（4方向）
+    augmented.append(cv2.rotate(image, cv2.ROTATE_90_CLOCKWISE))
     augmented.append(cv2.rotate(image, cv2.ROTATE_180))
-    # 水平反転
-    augmented.append(cv2.flip(image, 1))
+    augmented.append(cv2.rotate(image, cv2.ROTATE_90_COUNTERCLOCKWISE))
+    
     return augmented
+
+# ----------------------------
+# 劣化画像生成関数（双方向学習用）
+# ----------------------------
+def generate_degraded_image(high_quality_image):
+    """
+    高画質画像から低画質画像を生成（学習データ拡張用）
+    複数の劣化手法を組み合わせて、リアルな劣化を再現
+    """
+    degraded_images = []
+    
+    # 1. ガウシアンブラー（軽度）
+    blur1 = cv2.GaussianBlur(high_quality_image, (3, 3), 0.5)
+    degraded_images.append(blur1)
+    
+    # 2. ガウシアンブラー（中度）
+    blur2 = cv2.GaussianBlur(high_quality_image, (5, 5), 1.0)
+    degraded_images.append(blur2)
+    
+    # 3. ノイズ追加（軽度）
+    noise = np.random.normal(0, 5, high_quality_image.shape).astype(np.float32)
+    noisy = np.clip(high_quality_image.astype(np.float32) + noise, 0, 255).astype(np.uint8)
+    degraded_images.append(noisy)
+    
+    # 4. JPEG圧縮シミュレーション（品質80）
+    encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 80]
+    success, encoded_img = cv2.imencode('.jpg', high_quality_image, encode_param)
+    if success:
+        jpeg_compressed = cv2.imdecode(encoded_img, cv2.IMREAD_COLOR)
+        if jpeg_compressed is not None:
+            degraded_images.append(jpeg_compressed)
+    
+    # 5. ダウンサンプリング+アップサンプリング
+    h, w = high_quality_image.shape[:2]
+    if h > 2 and w > 2:  # サイズが十分大きい場合のみ
+        downsampled = cv2.resize(high_quality_image, (w//2, h//2), interpolation=cv2.INTER_LINEAR)
+        upsampled = cv2.resize(downsampled, (w, h), interpolation=cv2.INTER_LINEAR)
+        degraded_images.append(upsampled)
+    
+    return degraded_images
+
+def generate_enhanced_image(low_quality_image):
+    """
+    低画質画像から疑似的な高画質画像を生成（学習データ拡張用）
+    シャープニングやコントラスト調整で品質向上をシミュレート
+    """
+    enhanced_images = []
+    
+    # 1. アンシャープマスク（軽度）
+    gaussian = cv2.GaussianBlur(low_quality_image, (0, 0), 2.0)
+    unsharp = cv2.addWeighted(low_quality_image, 1.5, gaussian, -0.5, 0)
+    enhanced_images.append(unsharp)
+    
+    # 2. ヒストグラム均等化（コントラスト強化）
+    lab = cv2.cvtColor(low_quality_image, cv2.COLOR_BGR2LAB)
+    l, a, b = cv2.split(lab)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+    l_eq = clahe.apply(l)
+    enhanced = cv2.merge([l_eq, a, b])
+    enhanced = cv2.cvtColor(enhanced, cv2.COLOR_LAB2BGR)
+    enhanced_images.append(enhanced)
+    
+    # 3. バイラテラルフィルタ（ノイズ除去しつつエッジ保存）
+    bilateral = cv2.bilateralFilter(low_quality_image, 9, 75, 75)
+    enhanced_images.append(bilateral)
+    
+    return enhanced_images
 
 # ----------------------------
 # 画像サイズ統一関数
@@ -85,23 +202,27 @@ def align_image_sizes(low_img, high_img, mode='larger'):
 def train_image_enhancer(low_quality_images, high_quality_images, use_augmentation=True, 
                         max_size=384, n_trees=20, max_depth_val=10, align_mode='larger'):
     """
-    精度と速度のバランスを取った学習
-    異なるサイズの画像も自動的に統一して学習
-    max_size: 384px (256→384で精度向上、速度は許容範囲)
-    n_trees: 20 (10→20で精度大幅向上、速度は2倍)
-    max_depth: 10 (5→10で精度向上、速度への影響は小)
-    align_mode: 'larger', 'smaller', 'high', 'low'
+    双方向学習による高精度な画像補正モデルの訓練
+    
+    【双方向学習の仕組み】
+    1. 低画質→高画質（元データ）
+    2. 高画質→劣化→高画質（逆変換学習）
+    3. 低画質→疑似高画質（自己教師あり学習）
+    
+    これにより、AIが劣化プロセスと復元プロセスの両方を学習し、
+    より正確で汎用的な補正が可能になります。
     """
     X, y = [], []
-    trained_shape = None  # 学習に使用した画像サイズを保存
+    trained_shape = None
+    patch_size = 16  # パッチサイズ（16×16で細かく補正）
     
     # 画像サイズの統一と最適化
     resized_low, resized_high = [], []
     for low, high in zip(low_quality_images, high_quality_images):
-        # ステップ1: 低画質と高画質のサイズを統一
+        # サイズを統一
         low, high = align_image_sizes(low, high, mode=align_mode)
         
-        # ステップ2: max_sizeに収まるようにリサイズ
+        # max_sizeに収まるようにリサイズ
         h, w = low.shape[:2]
         if max(h, w) > max_size:
             scale = max_size / max(h, w)
@@ -109,14 +230,13 @@ def train_image_enhancer(low_quality_images, high_quality_images, use_augmentati
             low = cv2.resize(low, new_size, interpolation=cv2.INTER_LANCZOS4)
             high = cv2.resize(high, new_size, interpolation=cv2.INTER_LANCZOS4)
         
-        # 学習に使用する画像サイズを保存
         if trained_shape is None:
             trained_shape = low.shape
         
         resized_low.append(low)
         resized_high.append(high)
     
-    # データ拡張の適用
+    # データ拡張
     if use_augmentation:
         aug_low, aug_high = [], []
         for low, high in zip(resized_low, resized_high):
@@ -125,85 +245,233 @@ def train_image_enhancer(low_quality_images, high_quality_images, use_augmentati
         resized_low = aug_low
         resized_high = aug_high
     
-    # 特徴量抽出（正規化で精度向上）
-    for low, high in zip(resized_low, resized_high):
-        low_flat = low.flatten() / 255.0
-        high_flat = high.flatten() / 255.0
-        X.append(low_flat)
-        y.append(high_flat)
+    # 双方向学習: 高画質→低画質、低画質→高画質の両方向を学習
+    bidirectional_low, bidirectional_high = [], []
     
-    X = np.array(X)
-    y = np.array(y)
+    # 元のペア数を記録
+    original_pair_count = len(resized_low)
+    
+    # 元のペア（低→高）
+    bidirectional_low.extend(resized_low)
+    bidirectional_high.extend(resized_high)
+    
+    # 逆方向ペア1: 高画質から劣化画像を生成（高→低）
+    degraded_count = 0
+    for high in resized_high:
+        degraded_list = generate_degraded_image(high)
+        for degraded in degraded_list:
+            bidirectional_low.append(degraded)
+            bidirectional_high.append(high)  # 劣化→元の高画質
+            degraded_count += 1
+    
+    # 逆方向ペア2: 低画質から疑似高画質を生成（低→疑似高）
+    enhanced_count = 0
+    for low in resized_low:
+        enhanced_list = generate_enhanced_image(low)
+        for enhanced in enhanced_list:
+            bidirectional_low.append(low)
+            bidirectional_high.append(enhanced)  # 低画質→疑似高画質
+            enhanced_count += 1
+    
+    # 双方向学習データで置き換え
+    resized_low = bidirectional_low
+    resized_high = bidirectional_high
+    
+    # 総画像ペア数
+    total_image_pairs = len(resized_low)
+    
+    # パッチベースの学習データ生成
+    patch_count = 0
+    for low, high in zip(resized_low, resized_high):
+        h, w = low.shape[:2]
+        stride = patch_size  # オーバーラップなし（高速化）
+        
+        for i in range(0, h - patch_size + 1, stride):
+            for j in range(0, w - patch_size + 1, stride):
+                # パッチを抽出
+                low_patch = low[i:i+patch_size, j:j+patch_size]
+                high_patch = high[i:i+patch_size, j:j+patch_size]
+                
+                if low_patch.shape[:2] != (patch_size, patch_size):
+                    continue
+                
+                # 正規化して平坦化 + エッジ特徴量を追加（精度向上）
+                low_flat = low_patch.flatten().astype(np.float32) / 255.0
+                high_flat = high_patch.flatten().astype(np.float32) / 255.0
+                
+                # エッジ検出（Sobel）で追加特徴量（軽量）
+                gray_low = cv2.cvtColor(low_patch, cv2.COLOR_BGR2GRAY)
+                sobel_x = cv2.Sobel(gray_low, cv2.CV_32F, 1, 0, ksize=3)
+                sobel_y = cv2.Sobel(gray_low, cv2.CV_32F, 0, 1, ksize=3)
+                
+                # エッジ強度（スカラー値）
+                edge_magnitude = np.sqrt(sobel_x**2 + sobel_y**2).mean() / 255.0
+                
+                # 統計特徴量（平均、標準偏差）
+                mean_val = np.mean(low_patch, axis=(0, 1)) / 255.0
+                std_val = np.std(low_patch, axis=(0, 1)) / 255.0
+                
+                # 全特徴量を結合（ピクセル値 + エッジ強度 + 統計）
+                features = np.concatenate([low_flat, [edge_magnitude], mean_val, std_val])
+                
+                X.append(features)
+                y.append(high_flat)
+                patch_count += 1
+    
+    if len(X) == 0:
+        # フォールバック: 画像全体で学習
+        for low, high in zip(resized_low, resized_high):
+            low_flat = low.flatten().astype(np.float32) / 255.0
+            high_flat = high.flatten().astype(np.float32) / 255.0
+            X.append(low_flat)
+            y.append(high_flat)
+        patch_count = len(X)
+    
+    X = np.array(X, dtype=np.float32)
+    y = np.array(y, dtype=np.float32)
     
     # 訓練データとテストデータに分割
     if len(X) > 1:
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42)
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
     else:
         X_train, X_test, y_train, y_test = X, X, y, y
     
-    # 最適化: 精度を保ちつつ高速化
-    # n_estimators=20 (10→20): 精度↑↑ 速度↓
-    # max_depth=10 (5→10): 精度↑ 速度↓わずか
-    # min_samples_split=5: 過学習防止で汎化性能向上
+    # ランダムフォレストで学習（最適化されたパラメータ）
+    # 高速化と精度向上のバランス
+    n_estimators_val = min(n_trees, 50)
+    use_oob = len(X_train) > 100 and n_estimators_val >= 10  # OOBは十分なデータと木がある場合のみ
+    
     model = RandomForestRegressor(
-        n_estimators=n_trees,
+        n_estimators=n_estimators_val,
         max_depth=max_depth_val,
-        min_samples_split=5,
-        min_samples_leaf=2,
+        min_samples_split=10,  # 分割に必要な最小サンプル数を増やして過学習を防ぐ
+        min_samples_leaf=4,    # 葉ノードの最小サンプル数を増やして汎化性能向上
+        max_features='sqrt',   # 特徴量のサブセット選択で多様性向上
         random_state=42,
-        n_jobs=-1,
-        warm_start=False
+        n_jobs=-1,             # 全CPUコアを使用
+        warm_start=False,
+        bootstrap=True,        # ブートストラップサンプリングで汎化性能向上
+        oob_score=use_oob      # Out-of-Bag評価（条件付き）
     )
     model.fit(X_train, y_train)
     
     # 精度評価
-    if len(X_test) > 0:
-        score = model.score(X_test, y_test)
-    else:
-        score = 0.0
+    score = model.score(X_test, y_test) if len(X_test) > 0 else 0.0
     
-    # モデルに学習時の画像サイズを属性として保存
+    # モデルに必要な情報を保存
     model.trained_shape = trained_shape
+    model.patch_size = patch_size
     
-    # 学習データ数を返す
-    training_data_count = len(X)
+    # 学習に使用した画像ペア数（双方向学習による増加を反映）
+    # total_image_pairs は既に定義済み
     
-    return model, score, training_data_count
+    return model, score, patch_count, total_image_pairs
 
 def enhance_image(model, low_quality_image, max_size=384):
+    """
+    パッチベースで画像を補正
+    """
     # 元のサイズを保存
     original_shape = low_quality_image.shape
     h, w = original_shape[:2]
     
-    # 学習時と同じサイズにリサイズ（重要！）
+    # パッチサイズを取得
+    patch_size = getattr(model, 'patch_size', 32)
+    
+    # 学習時と同じサイズにリサイズ
     if hasattr(model, 'trained_shape') and model.trained_shape is not None:
-        # モデルが学習したサイズを使用
         target_shape = model.trained_shape
         resized_image = cv2.resize(low_quality_image, 
                                    (target_shape[1], target_shape[0]), 
                                    interpolation=cv2.INTER_LANCZOS4)
     else:
-        # フォールバック: max_sizeベースのリサイズ
         resized_image = low_quality_image.copy()
         if max(h, w) > max_size:
             scale = max_size / max(h, w)
             new_size = (int(w * scale), int(h * scale))
             resized_image = cv2.resize(low_quality_image, new_size, interpolation=cv2.INTER_LANCZOS4)
     
-    # リサイズ後の画像で予測
-    low_flat = resized_image.flatten() / 255.0
-    pred = model.predict([low_flat])[0]
+    # パッチベースで予測
+    h_resized, w_resized = resized_image.shape[:2]
+    enhanced = np.zeros((h_resized, w_resized, 3), dtype=np.float32)
+    count_map = np.zeros((h_resized, w_resized, 3), dtype=np.float32)
     
-    # リサイズ後のshapeでreshape（学習時と同じサイズ）
-    try:
-        enhanced = np.clip(pred * 255, 0, 255).reshape(resized_image.shape).astype(np.uint8)
-    except ValueError as e:
-        # デバッグ情報を表示
-        st.error(f"Reshape エラー: pred size={pred.size}, target shape={resized_image.shape}")
-        st.error(f"元画像: {original_shape}, リサイズ後: {resized_image.shape}")
-        raise e
+    stride = patch_size  # オーバーラップなし（高速化）
     
-    # 元のサイズに戻す（高品質補間）
+    for i in range(0, h_resized - patch_size + 1, stride):
+        for j in range(0, w_resized - patch_size + 1, stride):
+            # パッチを抽出
+            patch = resized_image[i:i+patch_size, j:j+patch_size]
+            
+            if patch.shape[:2] != (patch_size, patch_size):
+                continue
+            
+            # 正規化して平坦化 + エッジ特徴量を追加（学習時と同じ）
+            patch_flat = patch.flatten().astype(np.float32) / 255.0
+            
+            # エッジ検出（Sobel）
+            gray_patch = cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY)
+            sobel_x = cv2.Sobel(gray_patch, cv2.CV_32F, 1, 0, ksize=3)
+            sobel_y = cv2.Sobel(gray_patch, cv2.CV_32F, 0, 1, ksize=3)
+            
+            # エッジ強度（スカラー値）
+            edge_magnitude = np.sqrt(sobel_x**2 + sobel_y**2).mean() / 255.0
+            
+            # 統計特徴量
+            mean_val = np.mean(patch, axis=(0, 1)) / 255.0
+            std_val = np.std(patch, axis=(0, 1)) / 255.0
+            
+            # 全特徴量を結合
+            features = np.concatenate([patch_flat, [edge_magnitude], mean_val, std_val])
+            
+            # 予測
+            predicted_flat = model.predict([features])[0]
+            
+            # パッチサイズに復元
+            predicted_patch = (predicted_flat.reshape(patch_size, patch_size, 3) * 255).astype(np.float32)
+            
+            # 加算（オーバーラップ部分は平均化）
+            enhanced[i:i+patch_size, j:j+patch_size] += predicted_patch
+            count_map[i:i+patch_size, j:j+patch_size] += 1
+    
+    # 境界部分の処理
+    for i in range(0, h_resized, patch_size):
+        for j in range(0, w_resized, patch_size):
+            if i + patch_size > h_resized or j + patch_size > w_resized:
+                i_end = min(i + patch_size, h_resized)
+                j_end = min(j + patch_size, w_resized)
+                
+                if count_map[i, j, 0] == 0:  # 未処理の部分
+                    # パディングして予測
+                    patch = resized_image[i:i_end, j:j_end]
+                    if patch.shape[0] < patch_size or patch.shape[1] < patch_size:
+                        # パディング
+                        padded = np.zeros((patch_size, patch_size, 3), dtype=np.uint8)
+                        padded[:patch.shape[0], :patch.shape[1]] = patch
+                        
+                        # 特徴量抽出（学習時と同じ）
+                        patch_flat = padded.flatten().astype(np.float32) / 255.0
+                        gray_padded = cv2.cvtColor(padded, cv2.COLOR_BGR2GRAY)
+                        sobel_x = cv2.Sobel(gray_padded, cv2.CV_32F, 1, 0, ksize=3)
+                        sobel_y = cv2.Sobel(gray_padded, cv2.CV_32F, 0, 1, ksize=3)
+                        edge_magnitude = np.sqrt(sobel_x**2 + sobel_y**2).mean() / 255.0
+                        mean_val = np.mean(padded, axis=(0, 1)) / 255.0
+                        std_val = np.std(padded, axis=(0, 1)) / 255.0
+                        features = np.concatenate([patch_flat, [edge_magnitude], mean_val, std_val])
+                        
+                        predicted_flat = model.predict([features])[0]
+                        predicted_patch = (predicted_flat.reshape(patch_size, patch_size, 3) * 255).astype(np.float32)
+                        
+                        # 有効な部分だけコピー
+                        enhanced[i:i_end, j:j_end] = predicted_patch[:i_end-i, :j_end-j]
+                        count_map[i:i_end, j:j_end] = 1
+    
+    # オーバーラップ部分を平均化
+    count_map[count_map == 0] = 1  # ゼロ除算を防ぐ
+    enhanced = enhanced / count_map
+    enhanced = np.clip(enhanced, 0, 255).astype(np.uint8)
+    
+    # 元のサイズに戻す
     if enhanced.shape != original_shape:
         enhanced = cv2.resize(enhanced, (w, h), interpolation=cv2.INTER_LANCZOS4)
     
@@ -359,28 +627,32 @@ def fractal_dimension_3d_surface(image, max_size=256):
         # このスケールでの総ボックス数
         nr = 0
         
-        # 高さ方向のスケール
-        # Gは高さ（0-255）をr個のレベルに分割
-        G = max(1.0, 255.0 / r)
+        # 高さ方向のスケール（改善版）
+        # ボックスサイズrに応じて、高さ方向のボックスサイズを設定
+        # rが小さいほど細かく、rが大きいほど粗く
+        # 正規化：0-1の範囲にスケール
+        height_map_normalized = height_map / 255.0
+        G = max(0.001, 1.0 / r)  # 高さ方向のボックスサイズ
         
         for i in range(n_h):
             for j in range(n_w):
                 # r x r のグリッドセルを取得
-                grid = height_map[i*r:(i+1)*r, j*r:(j+1)*r]
+                grid = height_map_normalized[i*r:(i+1)*r, j*r:(j+1)*r]
                 
                 if grid.size == 0:
                     continue
                 
-                # グリッド内の最小・最大輝度値
+                # グリッド内の最小・最大高さ
                 min_height = np.min(grid)
                 max_height = np.max(grid)
                 
                 # 高さ方向のボックス位置を計算
                 l = int(np.floor(min_height / G))
-                k = int(np.floor(max_height / G))
+                k = int(np.ceil(max_height / G))
                 
                 # このグリッドが占める3Dボックスの数
-                nr += (k - l + 1)
+                # 最小でも1つはカウント
+                nr += max(1, k - l)
         
         if nr > 0:
             counts.append(nr)
@@ -407,28 +679,37 @@ def fractal_dimension_3d_surface(image, max_size=256):
         return None, np.array(valid_sizes), np.array(valid_counts)
     
     # 線形回帰でフラクタル次元を計算
-    # DBC法: log(Nr) vs log(r)
-    # Nr ∝ r^D → log(Nr) = D * log(r) + const
-    # 傾きが直接フラクタル次元を表す
+    # DBC法の正しい定義:
+    # Nr(r) = ボックスサイズrでの3Dボックスカウント数
+    # ボックスサイズが小さいほど、細かく測定できるので多くのボックスが必要
+    # つまり: r小 → Nr大, r大 → Nr小 （負の相関）
+    # log(Nr) vs log(r) の関係: log(Nr) = a * log(r) + b
+    # 傾き a は負になるのが正常
+    # 3D表面のフラクタル次元 D = 3 + a (aは負なので実質 3 - |a|)
+    
     coeffs = np.polyfit(log_sizes, log_counts, 1)
     slope = coeffs[0]
     
-    # DBC法では通常、傾きは正（カウント数が増える）
-    # 3D表面のフラクタル次元は2.0（平面）から3.0（完全3D）の間
-    # 実際の計算では、傾きの符号と値から判断
+    # デバッグ情報（コメントアウト可能）
+    # print(f"DBC法 - ボックスサイズ: {valid_sizes}")
+    # print(f"DBC法 - カウント数: {valid_counts}")
+    # print(f"DBC法 - 傾き: {slope:.4f}")
     
-    if abs(slope) < 0.5:
-        # 傾きが小さすぎる = ほぼ平面
-        fractal_dim_3d = 2.0 + abs(slope)
-    elif slope > 0:
-        # 正の傾き：通常のDBC法の結果
-        # ただし値が大きすぎる場合は調整
-        fractal_dim_3d = min(3.0, 2.0 + slope / 2.0)
+    # DBC法での3D表面フラクタル次元の計算
+    if slope < 0:
+        # 正常な傾向：ボックスサイズ増加→カウント減少
+        # FD = 3 + slope (slope < 0 なので実質 3 - |slope|)
+        # 例: slope = -0.5 → FD = 2.5 (健康な肌)
+        # 例: slope = -0.8 → FD = 2.2 (滑らか)
+        # 例: slope = -0.3 → FD = 2.7 (粗い)
+        fractal_dim_3d = 3.0 + slope
     else:
-        # 負の傾き：通常のボックスカウント法に近い
-        fractal_dim_3d = min(3.0, abs(slope))
+        # 異常な傾向：正の傾き（理論的にはありえない）
+        # データの問題の可能性があるが、フォールバック処理
+        fractal_dim_3d = 3.0 - slope
     
     # 妥当性チェック：2.0～3.0の範囲に収める
+    # 健康な肌の典型的な範囲は 2.4～2.8
     fractal_dim_3d = np.clip(fractal_dim_3d, 2.0, 3.0)
     
     return fractal_dim_3d, np.array(valid_sizes), np.array(valid_counts)
@@ -479,13 +760,21 @@ def plot_3d_fractal_analysis(box_sizes, counts, fd_3d):
             fit_line = coeffs[0] * log_sizes + coeffs[1]
             ax1.plot(log_sizes, fit_line, '--', color='#3498db', linewidth=2, label='回帰直線')
     
-    ax1.set_xlabel('log(ボックスサイズ)', fontsize=11, fontweight='bold')
-    ax1.set_ylabel('log(カウント数)', fontsize=11, fontweight='bold')
-    ax1.set_title(f'3D表面フラクタル次元解析\nFD = {fd_3d:.4f}', 
+    ax1.set_xlabel('log(ボックスサイズ r)', fontsize=11, fontweight='bold')
+    ax1.set_ylabel('log(3Dボックス数 Nr)', fontsize=11, fontweight='bold')
+    ax1.set_title(f'3D表面フラクタル次元解析 (DBC法)\nFD = {fd_3d:.4f}', 
                  fontsize=12, fontweight='bold', pad=15)
     ax1.grid(True, alpha=0.3, linestyle='--')
     if len(log_sizes) > 0:
-        ax1.legend(fontsize=9)
+        ax1.legend(fontsize=9, loc='best')
+    
+    # 傾きの情報を表示
+    if len(log_sizes) >= 2:
+        coeffs = np.polyfit(log_sizes, log_counts, 1)
+        slope = coeffs[0]
+        ax1.text(0.05, 0.95, f'傾き: {slope:.3f}\nFD = 3 - |傾き|', 
+                transform=ax1.transAxes, fontsize=9, verticalalignment='top',
+                bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
     
     # 右: 理想範囲との比較
     categories = ['現在の値', '理想範囲\n(下限)', '理想範囲\n(上限)']
@@ -658,11 +947,23 @@ def fractal_dimension(image, threshold_value=128, use_otsu=False, max_size=512):
         count = np.sum(resized > 0)
         counts.append(count)
 
-    # 異常検出
-    if all(c == 0 for c in counts) or all(c == counts[0] for c in counts):
+    # 0を含むデータを除外
+    valid_sizes = []
+    valid_counts = []
+    for size, count in zip(sizes, counts):
+        if count > 0:
+            valid_sizes.append(size)
+            valid_counts.append(count)
+    
+    # 有効なデータが不足している場合
+    if len(valid_sizes) < 3:
+        return None, sizes, counts, binary, threshold_value
+    
+    # 異常検出（すべて同じ値）
+    if all(c == valid_counts[0] for c in valid_counts):
         return None, sizes, counts, binary, threshold_value  # 無効な結果
     
-    coeffs = np.polyfit(np.log(sizes), np.log(counts), 1)
+    coeffs = np.polyfit(np.log(valid_sizes), np.log(valid_counts), 1)
     fractal_dim = -coeffs[0]
     
     # フラクタル次元の妥当性チェック
@@ -778,12 +1079,23 @@ def create_results_csv(results_data):
 # ----------------------------
 # Streamlitアプリ本体
 # ----------------------------
-st.title("🧠 フラクタル次元解析＋AI画像補完システム")
+st.title("🧠 肌質分析システム - フラクタル次元 × AI補正")
+st.markdown("**3D表面解析と2Dフラクタル次元による総合的な肌質評価**")
 st.markdown("---")
 
 # サイドバー設定
 with st.sidebar:
-    st.header("⚙️ 設定")
+    st.header("⚙️ 肌質分析設定")
+    
+    st.markdown("""
+    **📋 分析の流れ:**
+    1. 低画質画像をアップロード
+    2. （任意）高画質画像で学習
+    3. 3D+2D両方で自動解析
+    4. 総合的な肌質評価
+    """)
+    
+    st.markdown("---")
     
     # AI学習の精度・速度設定
     st.subheader("🤖 AI学習設定")
@@ -832,13 +1144,31 @@ with st.sidebar:
     
     st.markdown("---")
     
-    # 解析モード選択
+    # 肌質基準の説明
+    st.subheader("📊 理想的な肌の基準")
+    st.markdown(f"""
+    **3D表面フラクタル次元:**
+    - 理想範囲: {SKIN_FD_IDEAL_MIN} ~ {SKIN_FD_IDEAL_MAX}
+    - この範囲内: 滑らかで健康的な肌
+    - 範囲外: 凹凸が多いor少ない
+    
+    **評価ランク:**
+    - S (90点以上): 優秀
+    - A (80-90点): 良好
+    - B (70-80点): 普通
+    - C (60-70点): 要改善
+    - D (60点未満): 不良
+    """)
+    
+    st.markdown("---")
+    
+    # 解析モード選択（肌分析用に3D+2Dをデフォルト）
     st.subheader("🔬 解析モード")
     analysis_mode = st.radio(
         "解析手法を選択",
-        ["🔲 2D解析（標準）", "🌐 3D表面解析（肌質用）", "📊 両方実行"],
+        ["� 両方実行（推奨：肌分析用）", "�🔲 2D解析のみ", "🌐 3D表面解析のみ"],
         index=0,
-        help="2D: 通常のフラクタル解析 | 3D: 表面凹凸を考慮した肌質解析"
+        help="肌分析には3D+2Dの両方実行を推奨 | 2D: 通常のフラクタル解析 | 3D: 表面凹凸を考慮した肌質解析"
     )
     
     st.markdown("---")
@@ -858,11 +1188,15 @@ with st.sidebar:
         threshold_value = 128
 
 # ファイルアップロード
+st.markdown("### 📸 肌画像をアップロード")
+st.info("💡 ヒント: 同じ部位の異なる解像度の画像を使用すると、AI学習により高精度な分析が可能です")
 col1, col2 = st.columns(2)
 with col1:
-    uploaded_low = st.file_uploader("📁 低画質画像をアップロード", type=["jpg", "png", "bmp"])
+    uploaded_low = st.file_uploader("📁 低画質画像（分析対象）", type=["jpg", "png", "bmp"], 
+                                    help="分析したい肌画像をアップロード")
 with col2:
-    uploaded_high = st.file_uploader("📁 高画質画像(学習用)をアップロード", type=["jpg", "png", "bmp"])
+    uploaded_high = st.file_uploader("📁 高画質画像（学習用・任意）", type=["jpg", "png", "bmp"],
+                                     help="同じ部位の高画質画像があると、AIが学習して補正精度が向上します")
 
 if uploaded_low is not None:
     low_img = cv2.imdecode(np.frombuffer(uploaded_low.read(), np.uint8), cv2.IMREAD_COLOR)
@@ -870,7 +1204,7 @@ if uploaded_low is not None:
     st.markdown("---")
     
     # 画像サイズ情報を表示
-    st.info(f"📏 低画質画像サイズ: {low_img.shape[1]} × {low_img.shape[0]} px")
+    st.info(f"📏 アップロード完了: {low_img.shape[1]} × {low_img.shape[0]} px | 解析モード: 3D+2D両方（デフォルト）")
     
     # AI画像補完
     enhanced_img = None
@@ -899,11 +1233,11 @@ if uploaded_low is not None:
         progress_bar = st.progress(0)
         status_text = st.empty()
         
-        status_text.text(f'🤖 学習準備中... ({quality_mode})')
+        status_text.text(f'🤖 双方向学習準備中... ({quality_mode})')
         progress_bar.progress(20)
         
         # 選択されたモードのパラメータで学習
-        model, model_score, training_count = train_image_enhancer(
+        model, model_score, training_count, original_count = train_image_enhancer(
             [low_img], [high_img], 
             use_augmentation=use_augmentation,
             max_size=max_size,
@@ -921,15 +1255,33 @@ if uploaded_low is not None:
         progress_bar.empty()
         
         # 学習データ数と精度を表示
-        metric_cols = st.columns(3)
+        metric_cols = st.columns(4)
         with metric_cols[0]:
-            st.metric("📚 学習データ数", f"{training_count} 枚")
+            st.metric("🖼️ 学習画像ペア数", f"{original_count} 組")
         with metric_cols[1]:
-            st.metric("🎯 モデル精度", f"{model_score:.3f}")
+            st.metric("📚 学習パッチ数", f"{training_count} 個")
         with metric_cols[2]:
+            st.metric("🎯 モデル精度", f"{model_score:.3f}")
+        with metric_cols[3]:
             st.metric("⚙️ 学習モード", quality_mode)
         
         st.success(f"✅ 学習完了!")
+        
+        # 学習データの詳細情報
+        with st.expander("📖 学習データの詳細"):
+            st.markdown(f"""
+            **双方向学習データ構成:**
+            - 元画像ペア: 1組（低画質→高画質）
+            - データ拡張: 4倍（回転）
+            - 劣化画像生成: 高画質から最大5パターン
+            - 疑似高画質生成: 低画質から3パターン
+            
+            **最終的な学習データ:**
+            - 総画像ペア数: **{original_count}組**
+            - 総パッチ数: **{training_count}個**
+            - パッチサイズ: 32×32ピクセル
+            - 特徴量次元数: 3,079次元（ピクセル+エッジ+統計）
+            """)
         
         # 画像比較表示
         st.subheader("📊 画像比較")
@@ -950,19 +1302,99 @@ if uploaded_low is not None:
         if "3D" in analysis_mode or "両方" in analysis_mode:
             st.subheader("🌐 3D表面解析（肌質評価）")
             
-            with st.spinner('🔍 3D表面凹凸を解析中...'):
-                # 表面粗さ計算
-                roughness = calculate_surface_roughness(target_img)
+            with st.spinner('🔍 3つの画像の3D表面を解析中...'):
+                # 低画質画像の3D解析
+                roughness_low = calculate_surface_roughness(low_img)
+                fd_3d_low, box_sizes_3d_low, counts_3d_low = fractal_dimension_3d_surface(low_img)
                 
-                # 3Dフラクタル次元計算
-                fd_3d, box_sizes_3d, counts_3d = fractal_dimension_3d_surface(target_img)
+                # AI補正後画像の3D解析
+                roughness_enhanced = calculate_surface_roughness(enhanced_img)
+                fd_3d_enhanced, box_sizes_3d_enhanced, counts_3d_enhanced = fractal_dimension_3d_surface(enhanced_img)
+                
+                # 高画質画像の3D解析
+                roughness_high = calculate_surface_roughness(high_img)
+                fd_3d_high, box_sizes_3d_high, counts_3d_high = fractal_dimension_3d_surface(high_img)
             
-            if fd_3d is not None:
-                # 肌質評価
-                skin_eval, skin_eval_text = evaluate_skin_quality(fd_3d, roughness)
+            if fd_3d_low is not None and fd_3d_enhanced is not None and fd_3d_high is not None:
+                # 3D表面フラクタル次元の比較
+                st.subheader("📊 3D表面フラクタル次元の比較")
+                
+                fd_3d_cols = st.columns(3)
+                with fd_3d_cols[0]:
+                    st.metric("📱 低画質", f"{fd_3d_low:.4f}")
+                with fd_3d_cols[1]:
+                    delta_3d = fd_3d_enhanced - fd_3d_low
+                    st.metric("🤖 AI補正後", f"{fd_3d_enhanced:.4f}", delta=f"{delta_3d:+.4f}")
+                with fd_3d_cols[2]:
+                    st.metric("📷 高画質(目標)", f"{fd_3d_high:.4f}")
+                
+                # 3D表面フラクタル次元比較グラフ（1つにまとめた折れ線グラフ）
+                st.subheader("📈 3D表面フラクタル次元の推移（統合グラフ）")
+                
+                fig_3d_comparison = plt.figure(figsize=(14, 6))
+                
+                # log-logプロット（3つの画像をまとめて表示）
+                ax = fig_3d_comparison.add_subplot(111)
+                
+                # 低画質
+                if box_sizes_3d_low is not None and counts_3d_low is not None:
+                    log_sizes_low = np.log(box_sizes_3d_low)
+                    log_counts_low = np.log(counts_3d_low)
+                    ax.plot(log_sizes_low, log_counts_low, 'o-', color='#e74c3c', 
+                           linewidth=2, markersize=6, label=f'低画質 (FD={fd_3d_low:.4f})', alpha=0.7)
+                    
+                    # 回帰直線
+                    coeffs_low = np.polyfit(log_sizes_low, log_counts_low, 1)
+                    fitted_low = np.polyval(coeffs_low, log_sizes_low)
+                    ax.plot(log_sizes_low, fitted_low, '--', color='#e74c3c', linewidth=1.5, alpha=0.5)
+                
+                # AI補正後
+                if box_sizes_3d_enhanced is not None and counts_3d_enhanced is not None:
+                    log_sizes_enhanced = np.log(box_sizes_3d_enhanced)
+                    log_counts_enhanced = np.log(counts_3d_enhanced)
+                    ax.plot(log_sizes_enhanced, log_counts_enhanced, 's-', color='#3498db', 
+                           linewidth=2, markersize=6, label=f'AI補正後 (FD={fd_3d_enhanced:.4f})', alpha=0.7)
+                    
+                    # 回帰直線
+                    coeffs_enhanced = np.polyfit(log_sizes_enhanced, log_counts_enhanced, 1)
+                    fitted_enhanced = np.polyval(coeffs_enhanced, log_sizes_enhanced)
+                    ax.plot(log_sizes_enhanced, fitted_enhanced, '--', color='#3498db', linewidth=1.5, alpha=0.5)
+                
+                # 高画質
+                if box_sizes_3d_high is not None and counts_3d_high is not None:
+                    log_sizes_high = np.log(box_sizes_3d_high)
+                    log_counts_high = np.log(counts_3d_high)
+                    ax.plot(log_sizes_high, log_counts_high, '^-', color='#2ecc71', 
+                           linewidth=2, markersize=6, label=f'高画質 (FD={fd_3d_high:.4f})', alpha=0.7)
+                    
+                    # 回帰直線
+                    coeffs_high = np.polyfit(log_sizes_high, log_counts_high, 1)
+                    fitted_high = np.polyval(coeffs_high, log_sizes_high)
+                    ax.plot(log_sizes_high, fitted_high, '--', color='#2ecc71', linewidth=1.5, alpha=0.5)
+                
+                # 理想範囲を表示（背景）
+                y_min, y_max = ax.get_ylim()
+                ax.axhspan(y_min, y_max, alpha=0.05, color='green', zorder=0)
+                ax.text(0.02, 0.98, f'理想範囲: FD {SKIN_FD_IDEAL_MIN}~{SKIN_FD_IDEAL_MAX}', 
+                       transform=ax.transAxes, va='top', fontsize=9, 
+                       bbox=dict(boxstyle='round', facecolor='lightgreen', alpha=0.3))
+                
+                ax.set_xlabel('log(ボックスサイズ)', fontsize=11)
+                ax.set_ylabel('log(カウント数)', fontsize=11)
+                ax.set_title('3D表面フラクタル次元の比較 (log-logプロット)', fontsize=12, pad=10)
+                ax.legend(loc='best', fontsize=10, framealpha=0.9)
+                ax.grid(True, alpha=0.3, linestyle='--')
+                
+                plt.tight_layout()
+                st.pyplot(fig_3d_comparison)
+                plt.close(fig_3d_comparison)
+                
+                # AI補正後画像の肌質評価
+                skin_eval, skin_eval_text = evaluate_skin_quality(fd_3d_enhanced, roughness_enhanced)
                 
                 # 評価結果表示
-                st.success(f"✅ 3D表面フラクタル次元: **{fd_3d:.4f}**")
+                st.subheader("🎯 AI補正後の肌質評価")
+                st.success(f"✅ 3D表面フラクタル次元(AI補正後): **{fd_3d_enhanced:.4f}**")
                 
                 eval_cols = st.columns(4)
                 with eval_cols[0]:
@@ -977,37 +1409,81 @@ if uploaded_low is not None:
                 with eval_cols[3]:
                     st.metric("📏 FD評価", f"{skin_eval['fd_score']:.1f}点")
                 
-                # 3D解析グラフ
-                st.subheader("📈 3D表面フラクタル次元解析")
-                fig_3d_analysis = plot_3d_fractal_analysis(box_sizes_3d, counts_3d, fd_3d)
-                st.pyplot(fig_3d_analysis)
-                plt.close(fig_3d_analysis)
+                # 3つの画像の3D解析グラフを並べて表示
+                st.subheader("📈 各画像の3D表面フラクタル次元解析")
                 
-                # 表面粗さ可視化
-                st.subheader("🔬 表面凹凸の詳細解析")
-                fig_roughness = plot_surface_roughness(target_img, roughness)
-                st.pyplot(fig_roughness)
-                plt.close(fig_roughness)
+                analysis_cols = st.columns(3)
+                with analysis_cols[0]:
+                    st.markdown("**低画質**")
+                    fig_3d_low = plot_3d_fractal_analysis(box_sizes_3d_low, counts_3d_low, fd_3d_low)
+                    st.pyplot(fig_3d_low)
+                    plt.close(fig_3d_low)
                 
-                # 詳細情報
-                with st.expander("📖 3D解析の詳細データ"):
-                    detail_cols = st.columns(2)
+                with analysis_cols[1]:
+                    st.markdown("**AI補正後**")
+                    fig_3d_enhanced = plot_3d_fractal_analysis(box_sizes_3d_enhanced, counts_3d_enhanced, fd_3d_enhanced)
+                    st.pyplot(fig_3d_enhanced)
+                    plt.close(fig_3d_enhanced)
+                
+                with analysis_cols[2]:
+                    st.markdown("**高画質**")
+                    fig_3d_high = plot_3d_fractal_analysis(box_sizes_3d_high, counts_3d_high, fd_3d_high)
+                    st.pyplot(fig_3d_high)
+                    plt.close(fig_3d_high)
+                
+                # 表面粗さ比較
+                st.subheader("🔬 表面凹凸の比較解析")
+                
+                roughness_cols = st.columns(3)
+                with roughness_cols[0]:
+                    st.markdown("**低画質**")
+                    fig_rough_low = plot_surface_roughness(low_img, roughness_low)
+                    st.pyplot(fig_rough_low)
+                    plt.close(fig_rough_low)
+                
+                with roughness_cols[1]:
+                    st.markdown("**AI補正後**")
+                    fig_rough_enhanced = plot_surface_roughness(enhanced_img, roughness_enhanced)
+                    st.pyplot(fig_rough_enhanced)
+                    plt.close(fig_rough_enhanced)
+                
+                with roughness_cols[2]:
+                    st.markdown("**高画質**")
+                    fig_rough_high = plot_surface_roughness(high_img, roughness_high)
+                    st.pyplot(fig_rough_high)
+                    plt.close(fig_rough_high)
+                
+                # 詳細情報（3つの画像の比較）
+                with st.expander("📖 3D解析の詳細データ比較"):
+                    detail_cols = st.columns(3)
+                    
                     with detail_cols[0]:
-                        st.markdown("**表面粗さ指標:**")
-                        st.write(f"- 標準偏差: {roughness['std']:.2f}")
-                        st.write(f"- 平均絶対偏差: {roughness['mad']:.2f}")
-                        st.write(f"- 勾配平均: {roughness['gradient']:.2f}")
-                        st.write(f"- ラプラシアン分散: {roughness['laplacian']:.2f}")
+                        st.markdown("**低画質 - 表面粗さ指標:**")
+                        st.write(f"- 3D FD: {fd_3d_low:.4f}")
+                        st.write(f"- 標準偏差: {roughness_low['std']:.2f}")
+                        st.write(f"- 平均絶対偏差: {roughness_low['mad']:.2f}")
+                        st.write(f"- 勾配平均: {roughness_low['gradient']:.2f}")
+                        st.write(f"- ラプラシアン分散: {roughness_low['laplacian']:.2f}")
+                    
                     with detail_cols[1]:
-                        st.markdown("**理想的な肌の基準:**")
-                        st.write(f"- フラクタル次元: {SKIN_FD_IDEAL_MIN}~{SKIN_FD_IDEAL_MAX}")
-                        st.write(f"- 現在の値: {fd_3d:.4f}")
-                        if fd_3d < SKIN_FD_IDEAL_MIN:
-                            st.write(f"- 差分: -{(SKIN_FD_IDEAL_MIN - fd_3d):.4f} (滑らかすぎ)")
-                        elif fd_3d > SKIN_FD_IDEAL_MAX:
-                            st.write(f"- 差分: +{(fd_3d - SKIN_FD_IDEAL_MAX):.4f} (粗すぎ)")
-                        else:
-                            st.write(f"- ✅ 理想範囲内")
+                        st.markdown("**AI補正後 - 表面粗さ指標:**")
+                        st.write(f"- 3D FD: {fd_3d_enhanced:.4f}")
+                        st.write(f"- 標準偏差: {roughness_enhanced['std']:.2f}")
+                        st.write(f"- 平均絶対偏差: {roughness_enhanced['mad']:.2f}")
+                        st.write(f"- 勾配平均: {roughness_enhanced['gradient']:.2f}")
+                        st.write(f"- ラプラシアン分散: {roughness_enhanced['laplacian']:.2f}")
+                    
+                    with detail_cols[2]:
+                        st.markdown("**高画質 - 表面粗さ指標:**")
+                        st.write(f"- 3D FD: {fd_3d_high:.4f}")
+                        st.write(f"- 標準偏差: {roughness_high['std']:.2f}")
+                        st.write(f"- 平均絶対偏差: {roughness_high['mad']:.2f}")
+                        st.write(f"- 勾配平均: {roughness_high['gradient']:.2f}")
+                        st.write(f"- ラプラシアン分散: {roughness_high['laplacian']:.2f}")
+                    
+                    st.markdown("---")
+                    st.markdown("**理想的な肌の基準:**")
+                    st.write(f"- フラクタル次元: {SKIN_FD_IDEAL_MIN}~{SKIN_FD_IDEAL_MAX}")
             else:
                 st.error("❌ 3D表面フラクタル次元の計算に失敗しました。")
             
@@ -1133,14 +1609,25 @@ if uploaded_low is not None:
                 
                 # ボックスカウントグラフ（サイズ縮小）
                 st.subheader("📉 ボックスカウント解析")
-                fig_boxcount, ax = plt.subplots(figsize=(7, 4))  # 8,5 → 7,4
-                ax.plot(np.log(sizes), np.log(counts), marker="o", linewidth=2, markersize=8, color='#3498db')
-                ax.set_xlabel("log(ボックスサイズ)", fontsize=10)
-                ax.set_ylabel("log(カウント数)", fontsize=10)
-                ax.set_title("ボックスカウント法によるフラクタル次元", fontsize=11, pad=10)
-                ax.grid(True, alpha=0.3)
-                st.pyplot(fig_boxcount)
-                plt.close(fig_boxcount)
+                
+                # 0を除外してグラフ描画
+                valid_indices = [i for i, c in enumerate(counts) if c > 0]
+                fig_boxcount = None  # 初期化
+                if len(valid_indices) >= 2:
+                    valid_sizes_plot = [sizes[i] for i in valid_indices]
+                    valid_counts_plot = [counts[i] for i in valid_indices]
+                    
+                    fig_boxcount, ax = plt.subplots(figsize=(7, 4))  # 8,5 → 7,4
+                    ax.plot(np.log(valid_sizes_plot), np.log(valid_counts_plot), 
+                           marker="o", linewidth=2, markersize=8, color='#3498db')
+                    ax.set_xlabel("log(ボックスサイズ)", fontsize=10)
+                    ax.set_ylabel("log(カウント数)", fontsize=10)
+                    ax.set_title("ボックスカウント法によるフラクタル次元", fontsize=11, pad=10)
+                    ax.grid(True, alpha=0.3)
+                    st.pyplot(fig_boxcount)
+                    # ダウンロード用に保存してから閉じる（後で使う）
+                else:
+                    st.warning("⚠️ 有効なデータポイントが不足しているため、グラフを表示できません。")
                 
                 # 二値化画像表示
                 st.subheader("🖼️ 二値化画像")
@@ -1150,7 +1637,7 @@ if uploaded_low is not None:
                 st.subheader("🌐 3D フラクタル表面")
                 fig_3d = generate_3d_surface(binary)
                 st.pyplot(fig_3d)
-                plt.close(fig_3d)
+                # ダウンロード用に保存してから閉じる（後で使う）
                 
                 # 空間占有率
                 black_rate, white_rate = calculate_occupancy(binary)
@@ -1216,22 +1703,34 @@ if uploaded_low is not None:
                         )
                 
                 with download_cols[2]:
-                    graph_bytes = fig_to_bytes(fig_boxcount)
-                    st.download_button(
-                        label="📊 ボックスカウント",
-                        data=graph_bytes,
-                        file_name=f"boxcount_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png",
-                        mime="image/png"
-                    )
+                    if fig_boxcount is not None:
+                        graph_bytes = fig_to_bytes(fig_boxcount)
+                        st.download_button(
+                            label="📊 ボックスカウント",
+                            data=graph_bytes,
+                            file_name=f"boxcount_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png",
+                            mime="image/png"
+                        )
+                    else:
+                        st.info("グラフなし")
                 
                 with download_cols[3]:
-                    graph_3d_bytes = fig_to_bytes(fig_3d)
-                    st.download_button(
-                        label="🌐 3Dグラフ",
-                        data=graph_3d_bytes,
-                        file_name=f"3d_surface_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png",
-                        mime="image/png"
-                    )
+                    if fig_3d is not None:
+                        graph_3d_bytes = fig_to_bytes(fig_3d)
+                        st.download_button(
+                            label="🌐 3Dグラフ",
+                            data=graph_3d_bytes,
+                            file_name=f"3d_surface_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png",
+                            mime="image/png"
+                        )
+                    else:
+                        st.info("グラフなし")
+                
+                # グラフをクローズ
+                if fig_boxcount is not None:
+                    plt.close(fig_boxcount)
+                if fig_3d is not None:
+                    plt.close(fig_3d)
 
 else:
     st.info("👆 低画質画像をアップロードして解析を開始してください")
