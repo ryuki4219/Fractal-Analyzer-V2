@@ -1,0 +1,16 @@
+id,gender,image front,image right side,image left side
+1,male,1/front.png,1/right-side.png,1/left-side.png
+2,female,2/front.png,2/right-side.png,2/left-side.png
+3,female,3/front.png,3/right-side.png,3/left-side.png
+4,female,4/front.png,4/right-side.png,4/left-side.png
+5,male,5/front.png,5/right-side.png,5/left-side.png
+6,female,6/front.png,6/right-side.png,6/left-side.png
+7,male,7/front.png,7/right-side.png,7/left-side.png
+8,female,8/front.png,8/right-side.png,8/left-side.png
+9,female,9/front.png,9/right-side.png,9/left-side.png
+10,female,10/front.png,10/right-side.png,10/left-side.png
+11,female,11/front.png,11/right-side.png,11/left-side.png
+12,female,12/front.png,12/right-side.png,12/left-side.png
+13,female,13/front.png,13/right-side.png,13/left-side.png
+14,female,14/front.png,14/right-side.png,14/left-side.png
+15,male,15/front.png,15/right-side.png,15/left-side.png
