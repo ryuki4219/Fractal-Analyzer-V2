@@ -17,6 +17,8 @@ import streamlit as st
 from lightgbm import LGBMRegressor
 import time
 import pickle
+import json
+import re
 
 # Try import cupy for GPU acceleration (optional)
 USE_CUPY = False
@@ -493,6 +495,9 @@ def extract_feature_vector(img_bgr, size=256, use_gpu=None):
     entropy = -np.sum(probs * np.log2(probs))
     return [mean_val, std_val, edge_mean, noise_level, entropy]
 
+# 特徴量名のリスト
+FEATURE_NAMES = ['mean', 'std', 'edge_strength', 'noise_level', 'entropy']
+
 # ============================================================
 # Train FD predictor (low->high) using LightGBM (fast, parallel)
 # ============================================================
@@ -522,8 +527,13 @@ def train_fd_predictor_fast(low_imgs, high_imgs, n_estimators=400, max_depth=8):
         y.append(D_high)
     X = np.array(X, dtype=np.float32)
     y = np.array(y, dtype=np.float32)
+    
+    # 特徴量名を付けてDataFrameに変換
+    import pandas as pd
+    X_df = pd.DataFrame(X, columns=FEATURE_NAMES)
+    
     model = LGBMRegressor(n_estimators=n_estimators, max_depth=max_depth, learning_rate=0.05, n_jobs=-1)
-    model.fit(X, y)
+    model.fit(X_df, y)
     return model
 
 # ============================================================
@@ -534,6 +544,217 @@ def save_model(model, filepath="trained_fd_model.pkl"):
     with open(filepath, 'wb') as f:
         pickle.dump(model, f)
     return filepath
+
+def save_training_history(history, filepath="training_history.json"):
+    """学習履歴をJSON形式で保存"""
+    try:
+        # 既存の履歴を読み込む
+        if os.path.exists(filepath):
+            with open(filepath, 'r', encoding='utf-8') as f:
+                all_history = json.load(f)
+        else:
+            all_history = []
+        
+        # 新しい履歴を追加
+        all_history.append(history)
+        
+        # 保存
+        with open(filepath, 'w', encoding='utf-8') as f:
+            json.dump(all_history, f, indent=2, ensure_ascii=False)
+        
+        return filepath
+    except Exception as e:
+        print(f"履歴保存エラー: {e}")
+        return None
+
+def load_training_history(filepath="training_history.json"):
+    """学習履歴を読み込み"""
+    if not os.path.exists(filepath):
+        return []
+    try:
+        with open(filepath, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"履歴読み込みエラー: {e}")
+        return []
+
+def evaluate_ai_performance(correlation, improvement, mae):
+    """
+    AI学習の性能を評価
+    
+    Args:
+        correlation: 相関係数 (0-1)
+        improvement: 改善率 (%)
+        mae: 平均絶対誤差
+    
+    Returns:
+        dict: 評価結果
+    """
+    # 相関係数ベースの評価
+    if correlation >= 0.95:
+        corr_grade = "S"
+        corr_points = 100
+    elif correlation >= 0.90:
+        corr_grade = "A"
+        corr_points = 90
+    elif correlation >= 0.85:
+        corr_grade = "B"
+        corr_points = 80
+    elif correlation >= 0.75:
+        corr_grade = "C"
+        corr_points = 70
+    elif correlation >= 0.60:
+        corr_grade = "D"
+        corr_points = 50
+    else:
+        corr_grade = "F"
+        corr_points = 30
+    
+    # 改善率ベースの評価
+    if improvement >= 80:
+        improve_points = 100
+    elif improvement >= 60:
+        improve_points = 80
+    elif improvement >= 40:
+        improve_points = 60
+    elif improvement >= 20:
+        improve_points = 40
+    elif improvement > 0:
+        improve_points = 20
+    else:
+        improve_points = 0
+    
+    # MAEベースの評価
+    if mae <= 0.01:
+        mae_points = 100
+    elif mae <= 0.02:
+        mae_points = 90
+    elif mae <= 0.03:
+        mae_points = 80
+    elif mae <= 0.05:
+        mae_points = 70
+    elif mae <= 0.08:
+        mae_points = 50
+    else:
+        mae_points = 30
+    
+    # 総合スコア(重み付け: 相関50%, 改善30%, MAE20%)
+    total_score = (corr_points * 0.5 + improve_points * 0.3 + mae_points * 0.2)
+    
+    # 総合評価
+    if total_score >= 90:
+        grade = "S (優秀)"
+        emoji = "🌟"
+        comment = "素晴らしい性能です！"
+    elif total_score >= 80:
+        grade = "A (良好)"
+        emoji = "⭐"
+        comment = "良好な性能です"
+    elif total_score >= 70:
+        grade = "B (普通)"
+        emoji = "👍"
+        comment = "標準的な性能です"
+    elif total_score >= 60:
+        grade = "C (改善の余地あり)"
+        emoji = "📈"
+        comment = "さらなる改善が期待できます"
+    else:
+        grade = "D (要改善)"
+        emoji = "⚠️"
+        comment = "データ量や品質の見直しが必要です"
+    
+    return {
+        'grade': grade,
+        'emoji': emoji,
+        'score': total_score,
+        'comment': comment,
+        'correlation_grade': corr_grade,
+        'details': {
+            'correlation': correlation,
+            'improvement': improvement,
+            'mae': mae,
+            'corr_points': corr_points,
+            'improve_points': improve_points,
+            'mae_points': mae_points
+        }
+    }
+
+def analyze_learning_growth(history):
+    """
+    学習履歴から成長を分析
+    
+    Args:
+        history: 学習履歴のリスト
+    
+    Returns:
+        dict: 成長分析結果
+    """
+    if len(history) < 2:
+        return {
+            'trend': '不明',
+            'trend_emoji': '❓',
+            'correlation_change': 0,
+            'improvement_change': 0,
+            'best_correlation': 0,
+            'recommendation': 'まだ学習回数が少ないため、トレンドを判定できません'
+        }
+    
+    # メトリクスを含む履歴のみを抽出
+    valid_history = [h for h in history if 'metrics' in h]
+    
+    if len(valid_history) < 2:
+        return {
+            'trend': '不明',
+            'trend_emoji': '❓',
+            'correlation_change': 0,
+            'improvement_change': 0,
+            'best_correlation': 0,
+            'recommendation': '評価メトリクスが不足しています'
+        }
+    
+    # 最新と前回の比較
+    latest = valid_history[-1]['metrics']
+    previous = valid_history[-2]['metrics']
+    
+    corr_change = latest.get('correlation_pred', 0) - previous.get('correlation_pred', 0)
+    improve_change = latest.get('improvement', 0) - previous.get('improvement', 0)
+    
+    # 全履歴の最高記録
+    best_corr = max([h['metrics'].get('correlation_pred', 0) for h in valid_history])
+    best_improve = max([h['metrics'].get('improvement', 0) for h in valid_history])
+    
+    # トレンド判定
+    if corr_change > 0.05:
+        trend = "大幅改善"
+        trend_emoji = "🚀"
+        recommendation = "素晴らしい成長です！この調子で学習を続けてください。"
+    elif corr_change > 0.02:
+        trend = "改善中"
+        trend_emoji = "📈"
+        recommendation = "順調に性能が向上しています。データ拡張や品質レベルの調整でさらに改善できます。"
+    elif corr_change > -0.02:
+        trend = "横ばい"
+        trend_emoji = "➡️"
+        recommendation = "性能が安定しています。異なるデータや設定を試してみると良いでしょう。"
+    elif corr_change > -0.05:
+        trend = "やや低下"
+        trend_emoji = "📉"
+        recommendation = "前回より性能が下がっています。データの質や多様性を見直してください。"
+    else:
+        trend = "大幅低下"
+        trend_emoji = "⚠️"
+        recommendation = "性能が大きく低下しています。データセットを変更したか、外れ値が含まれている可能性があります。"
+    
+    return {
+        'trend': trend,
+        'trend_emoji': trend_emoji,
+        'correlation_change': corr_change,
+        'improvement_change': improve_change,
+        'best_correlation': best_corr,
+        'best_improvement': best_improve,
+        'recommendation': recommendation,
+        'num_sessions': len(valid_history)
+    }
 
 def load_model(filepath="trained_fd_model.pkl"):
     """学習済みモデルを読み込み"""
@@ -555,7 +776,10 @@ def predict_fd_from_low_quality(low_img, model):
         予測されたフラクタル次元
     """
     feat = extract_feature_vector(low_img)
-    D_pred = float(model.predict([feat])[0])
+    # DataFrameに変換して特徴量名を付与
+    import pandas as pd
+    feat_df = pd.DataFrame([feat], columns=FEATURE_NAMES)
+    D_pred = float(model.predict(feat_df)[0])
     return D_pred
 
 # ============================================================
@@ -579,6 +803,9 @@ def calculate_prediction_confidence(low_img, model, predicted_fd):
         dict: 信頼度情報
     """
     feat = extract_feature_vector(low_img)
+    # DataFrameに変換して特徴量名を付与
+    import pandas as pd
+    feat_df = pd.DataFrame([feat], columns=FEATURE_NAMES)
     
     # 1. 特徴量品質スコア (Feature Quality Score)
     # エッジ強度、ノイズレベル、エントロピーから評価
@@ -702,7 +929,10 @@ def evaluate_and_plot(high_imgs, low_imgs, model, use_gpu=None):
         D_low, *_ = fast_fractal_std_boxcount_batched(low, use_gpu=use_gpu)
         # predicted FD
         feat = extract_feature_vector(low)
-        D_pred = float(model.predict([feat])[0])
+        # DataFrameに変換して特徴量名を付与
+        import pandas as pd
+        feat_df = pd.DataFrame([feat], columns=FEATURE_NAMES)
+        D_pred = float(model.predict(feat_df)[0])
         D_high_list.append(D_high)
         D_low_list.append(D_low)
         D_pred_list.append(D_pred)
@@ -1099,6 +1329,17 @@ def evaluate_and_plot(high_imgs, low_imgs, model, use_gpu=None):
     with col_center:
         st.pyplot(fig, use_container_width=False)
     plt.close(fig)
+    
+    # メトリクスをsession_stateに保存
+    st.session_state['metrics'] = {
+        'correlation_low': float(r_low),
+        'correlation_pred': float(r_pred),
+        'mae_low': float(mae_low),
+        'mae_pred': float(mae_pred),
+        'r2_score': float(r2),
+        'improvement': float(improvement),
+        'num_samples': int(valid_mask.sum())
+    }
 
     return D_high_list, D_low_list, D_pred_list
 
@@ -1160,6 +1401,61 @@ def app():
         st.sidebar.warning("⚠️ モデル未読み込み")
         st.sidebar.write("学習モードで学習するか、")
         st.sidebar.write("推論モードでモデルをアップロードしてください")
+    
+    # ============================================================
+    # 📚 学習履歴を表示
+    # ============================================================
+    st.sidebar.markdown("---")
+    st.sidebar.header("📚 学習履歴")
+    training_history = load_training_history()
+    if training_history:
+        st.sidebar.success(f"✅ {len(training_history)}回の学習記録")
+        
+        # 最新の学習情報を表示
+        if len(training_history) > 0:
+            latest = training_history[-1]
+            st.sidebar.write(f"**最新学習:** {latest.get('timestamp', '不明')}")
+            if 'metrics' in latest:
+                metrics = latest['metrics']
+                corr = metrics.get('correlation_pred', 0)
+                improve = metrics.get('improvement', 0)
+                st.sidebar.write(f"📈 相関: {corr:.3f}")
+                st.sidebar.write(f"🎯 改善: {improve:.1f}%")
+                
+                # AI評価を表示
+                evaluation = evaluate_ai_performance(corr, improve, metrics.get('mae_pred', 0))
+                st.sidebar.write(f"**総合評価:** {evaluation['grade']} {evaluation['emoji']}")
+        
+        # 学習成長分析
+        if len(training_history) >= 2:
+            with st.sidebar.expander("📊 AI成長分析"):
+                growth_analysis = analyze_learning_growth(training_history)
+                st.write(f"**成長トレンド:** {growth_analysis['trend']} {growth_analysis['trend_emoji']}")
+                st.write(f"**相関係数の変化:** {growth_analysis['correlation_change']:+.3f}")
+                st.write(f"**改善率の変化:** {growth_analysis['improvement_change']:+.1f}%")
+                st.write(f"**最高記録 (相関):** {growth_analysis['best_correlation']:.3f}")
+                st.write("")
+                st.write(growth_analysis['recommendation'])
+        
+        # 履歴の詳細を展開可能に
+        with st.sidebar.expander("📋 全履歴を表示"):
+            for i, record in enumerate(reversed(training_history[-10:]), 1):
+                idx = len(training_history) - i + 1
+                st.write(f"**#{idx}** {record.get('timestamp', '不明')}")
+                st.write(f"  - サンプル数: {record.get('total_samples', 0)}")
+                st.write(f"  - 拡張: {record.get('augmentation_count', 0)}種類")
+                if 'metrics' in record:
+                    metrics = record['metrics']
+                    corr = metrics.get('correlation_pred', 0)
+                    improve = metrics.get('improvement', 0)
+                    st.write(f"  - 相関: {corr:.3f}")
+                    st.write(f"  - 改善: {improve:.1f}%")
+                    # 各記録の評価
+                    eval_result = evaluate_ai_performance(corr, improve, metrics.get('mae_pred', 0))
+                    st.write(f"  - 評価: {eval_result['grade']} {eval_result['emoji']}")
+                st.write("---")
+    else:
+        st.sidebar.info("まだ学習記録がありません")
     
     # 改善方法ガイド
     with st.sidebar.expander("💡 結果を改善する方法"):
@@ -1521,7 +1817,7 @@ def app():
         
         folder_path = st.text_input(
             "画像フォルダのパス",
-            value=r"E:\頬画像　画質別\画質別＿頬画像",
+            value=r"E:\画質別頬画像(元画像＋10段階)",
             help="高画質と低画質の画像が入ったフォルダパスを指定してください"
         )
         
@@ -1537,21 +1833,57 @@ def app():
                 file_pattern = st.text_input("カスタムパターン", value="*.jpg")
         
         with col2:
-            quality_level = st.selectbox(
-                "低画質レベルを選択",
-                ["low1", "low2", "low3", "カスタム"],
-                help="比較する低画質レベルを選択 (low1が最も高品質、low3が最も低品質)"
+            # 品質レベルグループ選択を追加
+            quality_group = st.radio(
+                "品質レベルグループ",
+                ["📗 個別選択", "📘 グループ選択"],
+                horizontal=True,
+                help="個別で選択するか、グループで一括選択するか"
             )
-            if quality_level == "カスタム":
-                quality_level = st.text_input("カスタムサフィックス", value="low1")
+            
+            if quality_group == "📗 個別選択":
+                quality_level = st.selectbox(
+                    "低画質レベルを選択",
+                    ["low1", "low2", "low3", "low4", "low5", "low6", "low7", "low8", "low9", "low10", "カスタム"],
+                    index=4,  # デフォルトでlow5を選択
+                    help="比較する低画質レベルを選択 (low1が最も高品質、low10が最も低品質)"
+                )
+                if quality_level == "カスタム":
+                    quality_level = st.text_input("カスタムサフィックス", value="low1")
+                quality_levels = [quality_level]  # リストに変換
+            else:
+                # グループ選択
+                quality_group_select = st.selectbox(
+                    "品質グループを選択",
+                    [
+                        "🟢 low1-3 (軽度劣化 - 易しい)",
+                        "🟡 low4-7 (中度劣化 - 普通)",
+                        "🔴 low8-10 (重度劣化 - 難しい)",
+                        "🌈 全レベル (low1-10)"
+                    ],
+                    help="複数の品質レベルを一括で学習に使用します"
+                )
+                
+                if quality_group_select == "🟢 low1-3 (軽度劣化 - 易しい)":
+                    quality_levels = ["low1", "low2", "low3"]
+                elif quality_group_select == "🟡 low4-7 (中度劣化 - 普通)":
+                    quality_levels = ["low4", "low5", "low6", "low7"]
+                elif quality_group_select == "🔴 low8-10 (重度劣化 - 難しい)":
+                    quality_levels = ["low8", "low9", "low10"]
+                else:  # 全レベル
+                    quality_levels = [f"low{i}" for i in range(1, 11)]
+                
+                st.info(f"✅ 選択: {', '.join(quality_levels)} ({len(quality_levels)}レベル)")
+                quality_level = quality_levels[0]  # 後方互換性のため最初のレベルを代入
+        
         
         if folder_path and os.path.exists(folder_path):
             # フォルダから画像ペアを自動検出
             all_files = sorted(glob.glob(os.path.join(folder_path, file_pattern)))
             
             # 高画質画像を検出(_lowがついていないもの)
-            high_files = [f for f in all_files if f"_{quality_level}" not in os.path.basename(f) 
-                          and not any(f"_low{i}" in os.path.basename(f) for i in ["1", "2", "3"])]
+            # 正規表現を使って_low + 数字のパターンを除外
+            high_files = [f for f in all_files if not re.search(r'_low\d+', os.path.basename(f))]
             
             if len(all_files) > 0:
                 st.info(f"📂 検出された全画像: {len(all_files)}枚")
@@ -1570,60 +1902,154 @@ def app():
                         st.write(f"**他の例:** {', '.join([os.path.basename(f) for f in high_files[1:min(4, len(high_files))]])}")
                 
                 # 対応する低画質画像を検索
-                low_files = []
+                # グループ選択の場合は複数レベルを収集
+                low_files_all = []
+                high_files_all = []
                 missing_files = []
-                for hf in high_files:
-                    base_name = os.path.splitext(os.path.basename(hf))[0]
-                    ext = os.path.splitext(os.path.basename(hf))[1]
-                    low_file = os.path.join(folder_path, f"{base_name}_{quality_level}{ext}")
-                    if os.path.exists(low_file):
-                        low_files.append(low_file)
-                    else:
-                        missing_files.append(f"{base_name}_{quality_level}{ext}")
+                debug_info = []  # デバッグ用
+                
+                for quality_lv in quality_levels:
+                    for hf in high_files:
+                        base_name = os.path.splitext(os.path.basename(hf))[0]
+                        ext = os.path.splitext(os.path.basename(hf))[1]
+                        low_file = os.path.join(folder_path, f"{base_name}_{quality_lv}{ext}")
+                        # パスの正規化
+                        low_file = os.path.normpath(low_file)
+                        
+                        # デバッグ情報を記録(最初の品質レベルのみ)
+                        if quality_lv == quality_levels[0]:
+                            exists = os.path.exists(low_file)
+                            debug_info.append({
+                                'high': os.path.basename(hf),
+                                'base': base_name,
+                                'ext': ext,
+                                'quality': quality_lv,
+                                'expected': os.path.basename(low_file),
+                                'full_path': low_file,  # フルパスも追加
+                                'exists': exists
+                            })
+                        
+                        if os.path.exists(low_file):
+                            low_files_all.append(low_file)
+                            high_files_all.append(hf)
+                        else:
+                            if quality_lv == quality_levels[0]:  # 最初のレベルのみ記録
+                                missing_files.append(f"{base_name}_{quality_lv}{ext}")
+                
+                # 変数名を統一
+                low_files = low_files_all
+                high_files_for_pairs = high_files_all
                 
                 # デバッグ: 低画質ファイルパスも表示
-                if low_files:
-                    with st.expander("🔍 ペア画像パス (デバッグ情報)"):
-                        st.write(f"**低画質ファイル数:** {len(low_files)}")
-                        st.write(f"**低画質例:** {os.path.basename(low_files[0])}")
-                        if missing_files:
-                            st.warning(f"**見つからないファイル:** {len(missing_files)}件")
-                            st.write(f"例: {', '.join(missing_files[:3])}")
-                
-                if len(low_files) == len(high_files):
-                    st.success(f"✅ {len(low_files)}組の完全なペアを検出しました")
+                with st.expander("🔍 ペア画像パス (デバッグ情報)", expanded=True):
+                    st.write(f"**📁 指定フォルダ:** `{folder_path}`")
+                    st.write(f"**📋 ファイルパターン:** `{file_pattern}`")
+                    st.write(f"**📋 検出された全画像:** {len(all_files)}枚")
+                    st.write(f"**📋 高画質画像:** {len(high_files)}枚")
+                    if len(quality_levels) > 1:
+                        st.write(f"**🎚️ 選択した品質レベル:** `{', '.join(quality_levels)}` ({len(quality_levels)}レベル)")
+                        st.write(f"**📊 元画像数:** {len(high_files)}")
+                        st.write(f"**📊 収集ペア数:** {len(low_files)} (期待: {len(high_files) * len(quality_levels)})")
+                    else:
+                        st.write(f"**🎚️ 選択した品質レベル:** `{quality_level}`")
+                        st.write(f"**📊 高画質ファイル数:** {len(high_files)}")
+                        st.write(f"**📊 低画質ファイル数:** {len(low_files)}")
+                    st.write("")
                     
-                    # 画像を読み込み
-                    uploaded_high = high_files
-                    uploaded_low = low_files
-                    auto_mode = True
-                else:
-                    st.error(f"❌ ペアが不完全です (高画質: {len(high_files)}枚, 低画質: {len(low_files)}枚)")
+                    if len(debug_info) > 0:
+                        st.write("### 最初の5件の検索結果:")
+                        for i, info in enumerate(debug_info[:5]):
+                            st.write(f"**{i+1}. {info['high']}**")
+                            st.write(f"  - ベース名: `{info['base']}`")
+                            st.write(f"  - 拡張子: `{info['ext']}`")
+                            st.write(f"  - 品質レベル: `{info['quality']}`")
+                            st.write(f"  - 探すファイル: `{info['expected']}`")
+                            st.write(f"  - フルパス: `{info['full_path']}`")
+                            st.write(f"  - 存在: {'✅ はい' if info['exists'] else '❌ いいえ'}")
+                            st.write("---")
+                    
                     if len(low_files) > 0:
-                        st.warning(f"一部のペアのみ使用しますか? (完全なペア: {len(low_files)}組)")
-                        if st.checkbox("不完全でも続行する"):
-                            # 完全なペアのみ使用
-                            valid_high = []
-                            valid_low = []
-                            for hf in high_files:
-                                base_name = os.path.splitext(os.path.basename(hf))[0]
-                                ext = os.path.splitext(os.path.basename(hf))[1]
-                                low_file = os.path.join(folder_path, f"{base_name}_{quality_level}{ext}")
-                                if os.path.exists(low_file):
-                                    valid_high.append(hf)
-                                    valid_low.append(low_file)
-                            uploaded_high = valid_high
-                            uploaded_low = valid_low
-                            auto_mode = True
-                            st.info(f"✅ {len(valid_high)}組の完全なペアを使用します")
+                        st.success(f"**見つかった低画質ファイル例:** {os.path.basename(low_files[0])}")
+                    
+                    if missing_files:
+                        st.error(f"**見つからないファイル:** {len(missing_files)}件")
+                        st.write("最初の5件:")
+                        for f in missing_files[:5]:
+                            st.write(f"  - `{f}`")
+                        
+                        # 実際にフォルダ内にあるファイルを表示
+                        st.write("### フォルダ内の実際のファイル (最初の20件):")
+                        actual_files = sorted(glob.glob(os.path.join(folder_path, "*.jpg")))[:20]
+                        for f in actual_files:
+                            fname = os.path.basename(f)
+                            # いずれかのquality_levelを含むファイルをハイライト
+                            is_target = any(f"_{ql}" in fname for ql in quality_levels)
+                            if is_target:
+                                st.write(f"  - ✅ `{fname}`")
+                            else:
+                                st.write(f"  - `{fname}`")
+                
+                
+                # グループ選択の場合は期待値が異なる
+                if len(quality_levels) > 1:
+                    expected_pairs = len(high_files) * len(quality_levels)
+                    if len(low_files) == expected_pairs:
+                        st.success(f"✅ {len(low_files)}組の完全なペアを検出しました ({len(high_files)}画像 × {len(quality_levels)}レベル)")
+                        uploaded_high = high_files_for_pairs
+                        uploaded_low = low_files
+                        auto_mode = True
+                    else:
+                        st.warning(f"⚠️ 一部のペアが見つかりません (期待: {expected_pairs}組, 検出: {len(low_files)}組)")
+                        if len(low_files) > 0:
+                            if st.checkbox("検出されたペアのみで続行する"):
+                                uploaded_high = high_files_for_pairs
+                                uploaded_low = low_files
+                                auto_mode = True
+                                st.info(f"✅ {len(low_files)}組のペアを使用します")
+                            else:
+                                uploaded_high = None
+                                uploaded_low = None
+                                auto_mode = False
                         else:
                             uploaded_high = None
                             uploaded_low = None
                             auto_mode = False
+                else:
+                    # 個別選択の場合(従来通り)
+                    if len(low_files) == len(high_files):
+                        st.success(f"✅ {len(low_files)}組の完全なペアを検出しました")
+                        uploaded_high = high_files
+                        uploaded_low = low_files
+                        auto_mode = True
                     else:
-                        uploaded_high = None
-                        uploaded_low = None
-                        auto_mode = False
+                        st.error(f"❌ ペアが不完全です (高画質: {len(high_files)}枚, 低画質: {len(low_files)}枚)")
+                        if len(low_files) > 0:
+                            st.warning(f"一部のペアのみ使用しますか? (完全なペア: {len(low_files)}組)")
+                            if st.checkbox("不完全でも続行する"):
+                                # 完全なペアのみ使用
+                                valid_high = []
+                                valid_low = []
+                                for hf in high_files:
+                                    base_name = os.path.splitext(os.path.basename(hf))[0]
+                                    ext = os.path.splitext(os.path.basename(hf))[1]
+                                    low_file = os.path.join(folder_path, f"{base_name}_{quality_level}{ext}")
+                                    # パスの正規化
+                                    low_file = os.path.normpath(low_file)
+                                    if os.path.exists(low_file):
+                                        valid_high.append(hf)
+                                        valid_low.append(low_file)
+                                uploaded_high = valid_high
+                                uploaded_low = valid_low
+                                auto_mode = True
+                                st.info(f"✅ {len(valid_high)}組の完全なペアを使用します")
+                            else:
+                                uploaded_high = None
+                                uploaded_low = None
+                                auto_mode = False
+                        else:
+                            uploaded_high = None
+                            uploaded_low = None
+                            auto_mode = False
             else:
                 st.warning(f"⚠️ フォルダ内に'{file_pattern}'パターンの画像が見つかりません")
                 uploaded_high = None
@@ -2115,6 +2541,94 @@ def app():
                 # Evaluate & show metrics
                 st.info("解析・比較を行います...")
                 D_high, D_low, D_pred = evaluate_and_plot(high_imgs, low_imgs, model, use_gpu=use_gpu_checkbox)
+                
+                # 学習履歴を保存
+                training_record = {
+                    'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
+                    'num_pairs': len(high_imgs),
+                    'quality_level': quality_level,
+                    'augmentation_count': len(augmentation_methods),
+                    'augmentation_types': augmentation_methods,
+                    'total_samples': len(low_imgs),
+                    'model_params': {
+                        'n_estimators': 400,
+                        'max_depth': 8,
+                        'learning_rate': 0.05
+                    }
+                }
+                
+                # 評価結果を履歴に追加
+                if 'metrics' in st.session_state:
+                    training_record['metrics'] = st.session_state['metrics']
+                
+                history_path = save_training_history(training_record)
+                if history_path:
+                    st.success(f"📊 学習履歴を保存しました: {history_path}")
+                
+                # ============================================================
+                # 🎯 AI性能評価を表示
+                # ============================================================
+                if 'metrics' in st.session_state:
+                    metrics = st.session_state['metrics']
+                    evaluation = evaluate_ai_performance(
+                        metrics.get('correlation_pred', 0),
+                        metrics.get('improvement', 0),
+                        metrics.get('mae_pred', 0)
+                    )
+                    
+                    st.markdown("---")
+                    st.subheader("🎯 AI性能総合評価")
+                    
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric(
+                            label="総合評価",
+                            value=evaluation['grade'],
+                            help=f"スコア: {evaluation['score']:.1f}/100"
+                        )
+                    with col2:
+                        st.metric(
+                            label="相関係数評価",
+                            value=evaluation['correlation_grade'],
+                            delta=f"{metrics.get('correlation_pred', 0):.3f}"
+                        )
+                    with col3:
+                        st.metric(
+                            label="改善率",
+                            value=f"{metrics.get('improvement', 0):.1f}%",
+                            delta="良好" if metrics.get('improvement', 0) > 50 else "要改善"
+                        )
+                    
+                    st.info(f"{evaluation['emoji']} **{evaluation['comment']}**")
+                    
+                    # 詳細分析
+                    with st.expander("📊 詳細分析"):
+                        st.write("### 各評価項目のポイント")
+                        st.write(f"- **相関係数スコア**: {evaluation['details']['corr_points']:.1f}/100")
+                        st.write(f"- **改善率スコア**: {evaluation['details']['improve_points']:.1f}/100")
+                        st.write(f"- **MAEスコア**: {evaluation['details']['mae_points']:.1f}/100")
+                        st.write("")
+                        st.write(f"**総合スコア計算式**: 相関50% + 改善率30% + MAE20%")
+                        st.write(f"= {evaluation['details']['corr_points']:.1f}×0.5 + {evaluation['details']['improve_points']:.1f}×0.3 + {evaluation['details']['mae_points']:.1f}×0.2")
+                        st.write(f"= **{evaluation['score']:.1f}点**")
+                    
+                    # 成長分析(複数回学習している場合)
+                    all_history = load_training_history()
+                    if len(all_history) >= 2:
+                        growth = analyze_learning_growth(all_history)
+                        with st.expander("📈 学習成長トレンド"):
+                            st.write(f"### {growth['trend']} {growth['trend_emoji']}")
+                            st.write(f"**学習セッション数**: {growth['num_sessions']}回")
+                            st.write(f"**前回からの変化**:")
+                            st.write(f"  - 相関係数: {growth['correlation_change']:+.3f}")
+                            st.write(f"  - 改善率: {growth['improvement_change']:+.1f}%")
+                            st.write(f"**歴代最高記録**:")
+                            st.write(f"  - 相関係数: {growth['best_correlation']:.3f}")
+                            st.write(f"  - 改善率: {growth['best_improvement']:.1f}%")
+                            st.write("")
+                            st.info(f"💡 **推奨アクション**: {growth['recommendation']}")
+                    
+                    st.markdown("---")
                 
                 # 結果をsession_stateに保存
                 st.session_state['analysis_results'] = {
