@@ -578,6 +578,246 @@ def load_training_history(filepath="training_history.json"):
         print(f"履歴読み込みエラー: {e}")
         return []
 
+def calculate_ai_readiness(history):
+    """
+    AIの実用準備状況を評価
+    
+    Returns:
+        dict: {
+            'ready': bool (実用可能か),
+            'confidence': float (0-100, 信頼度),
+            'level': str (初級/中級/上級/プロ/マスター),
+            'recommendations': list (改善アドバイス),
+            'stats': dict (統計情報),
+            'next_milestone': dict (次の目標)
+        }
+    """
+    if not history or len(history) == 0:
+        return {
+            'ready': False,
+            'confidence': 0,
+            'level': '未学習',
+            'recommendations': [
+                '📚 まずは学習を開始してください',
+                '🎯 推奨: 20組以上の画像ペアで学習',
+                '🔄 データ拡張を使用して多様性を確保'
+            ],
+            'stats': {
+                'total_sessions': 0,
+                'total_pairs': 0,
+                'best_correlation': 0,
+                'best_improvement': 0,
+                'avg_mae': 0
+            },
+            'next_milestone': {
+                'target': '初回学習完了',
+                'progress': 0,
+                'needed': '学習開始'
+            }
+        }
+    
+    # 統計計算
+    total_sessions = len(history)
+    total_pairs = sum(h.get('num_pairs', 0) for h in history)
+    
+    # metricsから正しいキーで取得
+    correlations = []
+    improvements = []
+    maes = []
+    
+    for h in history:
+        metrics = h.get('metrics', {})
+        if metrics:
+            # correlation_pred または correlation
+            corr = metrics.get('correlation_pred', metrics.get('correlation', 0))
+            if corr > 0:
+                correlations.append(corr)
+            
+            # improvement または improvement_rate
+            imp = metrics.get('improvement', metrics.get('improvement_rate', 0))
+            if imp != 0:
+                improvements.append(imp)
+            
+            # mae_pred
+            mae = metrics.get('mae_pred', 1.0)
+            if mae < 1.0:
+                maes.append(mae)
+    
+    best_correlation = max(correlations) if correlations else 0
+    avg_correlation = sum(correlations) / len(correlations) if correlations else 0
+    best_improvement = max(improvements) if improvements else 0
+    avg_improvement = sum(improvements) / len(improvements) if improvements else 0
+    best_mae = min(maes) if maes else 1.0
+    avg_mae = sum(maes) / len(maes) if maes else 1.0
+    
+    # 最新セッションの性能 - metricsから取得
+    latest = history[-1]
+    latest_metrics = latest.get('metrics', {})
+    latest_corr = latest_metrics.get('correlation_pred', latest_metrics.get('correlation', 0))
+    latest_mae = latest_metrics.get('mae_pred', 1.0)
+    latest_improvement = latest_metrics.get('improvement', latest_metrics.get('improvement_rate', 0))
+    
+    # デバッグ情報を追加
+    print(f"DEBUG - Latest metrics: correlation={latest_corr}, mae={latest_mae}, improvement={latest_improvement}")
+    print(f"DEBUG - History length: {len(history)}, Total pairs: {total_pairs}")
+    
+    # 信頼度計算 (0-100)
+    confidence = 0
+    
+    # 1. 相関係数による評価 (40点満点)
+    if latest_corr >= 0.95:
+        confidence += 40
+    elif latest_corr >= 0.90:
+        confidence += 35
+    elif latest_corr >= 0.85:
+        confidence += 30
+    elif latest_corr >= 0.80:
+        confidence += 25
+    elif latest_corr >= 0.70:
+        confidence += 15
+    else:
+        confidence += latest_corr * 20
+    
+    # 2. MAEによる評価 (30点満点)
+    # フラクタル次元は通常2.0-3.0の範囲なので、MAEの基準を調整
+    # 注意: 全レベル (low1-10) を使用すると、品質差が大きすぎてMAEが悪化します
+    #       → 推奨: low4-7 (中度劣化) で学習すると、MAE 0.02-0.03 を達成可能
+    if latest_mae < 0.01:
+        confidence += 30  # 非常に優秀 (0.3-0.5%の相対誤差)
+    elif latest_mae < 0.02:
+        confidence += 28  # 優秀 (0.7-1.0%の相対誤差)
+    elif latest_mae < 0.03:
+        confidence += 25  # 良好 (1.0-1.5%の相対誤差)
+    elif latest_mae < 0.05:
+        confidence += 20  # 実用レベル (1.7-2.5%の相対誤差) ← 全レベル使用時はここに留まる
+    elif latest_mae < 0.08:
+        confidence += 15  # 許容範囲
+    elif latest_mae < 0.10:
+        confidence += 10  # 要改善
+    else:
+        confidence += max(0, 10 - latest_mae * 50)  # スケール調整
+    
+    # 3. 改善率による評価 (20点満点)
+    if latest_improvement > 50:
+        confidence += 20
+    elif latest_improvement > 30:
+        confidence += 15
+    elif latest_improvement > 10:
+        confidence += 10
+    elif latest_improvement > 0:
+        confidence += 5
+    
+    # 4. 学習回数と安定性 (10点満点)
+    if total_sessions >= 10:
+        confidence += 10
+    elif total_sessions >= 5:
+        confidence += 7
+    elif total_sessions >= 3:
+        confidence += 5
+    else:
+        confidence += total_sessions * 1.5
+    
+    confidence = min(100, confidence)
+    
+    # レベル判定
+    if confidence >= 90:
+        level = '🏆 マスター'
+        level_desc = '実用レベル - 高精度予測が可能'
+    elif confidence >= 75:
+        level = '⭐ プロ'
+        level_desc = '実用可能 - 信頼できる予測'
+    elif confidence >= 60:
+        level = '🥇 上級'
+        level_desc = '実用に近い - さらなる改善推奨'
+    elif confidence >= 40:
+        level = '🥈 中級'
+        level_desc = '学習中 - 追加データが必要'
+    elif confidence >= 20:
+        level = '🥉 初級'
+        level_desc = '学習開始 - 継続が重要'
+    else:
+        level = '🌱 入門'
+        level_desc = 'データ収集段階'
+    
+    # 実用可能判定
+    ready = (confidence >= 75 and 
+             latest_corr >= 0.85 and 
+             latest_mae < 0.01 and
+             total_sessions >= 3)
+    
+    # 改善アドバイス
+    recommendations = []
+    
+    if latest_corr < 0.85:
+        recommendations.append('📊 相関係数が低い → より多様なデータが必要です')
+    if latest_mae > 0.01:
+        recommendations.append('🎯 誤差が大きい → データ拡張を増やしてください')
+    if latest_improvement < 20:
+        recommendations.append('⚡ 改善率が低い → 品質レベルを見直してください')
+    if total_pairs < 100:
+        recommendations.append(f'📈 データ量不足 → 現在{total_pairs}組、目標100組以上')
+    if total_sessions < 5:
+        recommendations.append(f'🔄 学習回数 → 現在{total_sessions}回、推奨5回以上')
+    
+    if not recommendations:
+        recommendations.append('✅ 優れた性能です！継続して学習を重ねましょう')
+        if confidence < 90:
+            recommendations.append('🎖️ マスターレベルを目指して、さらなるデータ追加を')
+    
+    # 次のマイルストーン
+    if confidence < 40:
+        next_milestone = {
+            'target': '中級レベル到達',
+            'progress': confidence / 40 * 100,
+            'needed': f'信頼度を{40-confidence:.0f}ポイント向上 (データ追加と品質改善)'
+        }
+    elif confidence < 60:
+        next_milestone = {
+            'target': '上級レベル到達',
+            'progress': (confidence - 40) / 20 * 100,
+            'needed': f'信頼度を{60-confidence:.0f}ポイント向上 (精度向上が必要)'
+        }
+    elif confidence < 75:
+        next_milestone = {
+            'target': 'プロレベル到達 (実用化)',
+            'progress': (confidence - 60) / 15 * 100,
+            'needed': f'信頼度を{75-confidence:.0f}ポイント向上 (安定性向上)'
+        }
+    elif confidence < 90:
+        next_milestone = {
+            'target': 'マスターレベル到達',
+            'progress': (confidence - 75) / 15 * 100,
+            'needed': f'信頼度を{90-confidence:.0f}ポイント向上 (最高精度を目指す)'
+        }
+    else:
+        next_milestone = {
+            'target': '完璧な維持',
+            'progress': 100,
+            'needed': '現在の高水準を維持してください'
+        }
+    
+    return {
+        'ready': ready,
+        'confidence': confidence,
+        'level': level,
+        'level_desc': level_desc,
+        'recommendations': recommendations,
+        'stats': {
+            'total_sessions': total_sessions,
+            'total_pairs': total_pairs,
+            'best_correlation': best_correlation,
+            'avg_correlation': avg_correlation,
+            'best_improvement': best_improvement,
+            'avg_improvement': avg_improvement,
+            'best_mae': best_mae,
+            'avg_mae': avg_mae,
+            'latest_correlation': latest_corr,
+            'latest_mae': latest_mae,
+            'latest_improvement': latest_improvement
+        },
+        'next_milestone': next_milestone
+    }
+
 def evaluate_ai_performance(correlation, improvement, mae):
     """
     AI学習の性能を評価
@@ -1350,6 +1590,243 @@ def app():
     st.set_page_config(layout="wide", page_title="高速フラクタル解析（GPU最適化版）")
     st.title("🚀 高速フラクタル解析 + AI補正（GPU 最適化版）")
     st.markdown("CuPy が利用可能な場合は GPU を自動で使います。無ければ CPU (NumPy) で処理します。")
+    
+    # ============================================================
+    # 🔔 起動時の継続性通知（初回のみ表示）
+    # ============================================================
+    if 'startup_notification_shown' not in st.session_state:
+        st.session_state['startup_notification_shown'] = True
+        
+        # モデルと学習履歴の状態を確認
+        model_loaded = st.session_state.get('model_loaded', False)
+        history_stats = st.session_state.get('history_stats', {})
+        total_sessions = history_stats.get('total_sessions', 0)
+        
+        if model_loaded and total_sessions > 0:
+            # 前回の学習が継続されている場合
+            st.success(f"""
+            ✅ **前回の学習状態を復元しました！**
+            
+            - 📚 学習回数: {total_sessions}回
+            - 🎓 累計学習データ: {history_stats.get('total_samples', 0):,}組
+            - 📅 最終学習: {history_stats.get('last_trained', '不明')}
+            - 🤖 モデル: 自動読み込み完了
+            
+            💡 前回の学習結果がそのまま使えます。推論モードですぐに解析できます！
+            """)
+        elif total_sessions > 0:
+            # 学習履歴はあるがモデルが無い場合
+            st.warning(f"""
+            ⚠️ **学習履歴を検出しましたが、モデルファイルが見つかりません**
+            
+            - 📚 学習履歴: {total_sessions}回
+            - 📅 最終学習: {history_stats.get('last_trained', '不明')}
+            
+            💡 学習モードで再学習すると、AIが復活します。
+            """)
+        else:
+            # 初めての起動
+            st.info("""
+            👋 **ようこそ！フラクタル解析AIへ**
+            
+            このアプリは、あなたの学習履歴とAIモデルを自動的に保存します。
+            
+            **次回起動時も:**
+            - ✅ 学習した知識が継続
+            - ✅ AIモデルが自動読み込み
+            - ✅ 学習履歴が保持
+            
+            💡 まずは「学習モード」でAIを学習させましょう！
+            """)
+    
+    # ============================================================
+    # 🎯 AI成長状況レポート（トップに表示）
+    # ============================================================
+    training_history_preview = load_training_history()
+    ai_status = calculate_ai_readiness(training_history_preview)
+    
+    # コンパクトなステータス表示
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("🎯 AI信頼度", f"{ai_status['confidence']:.0f}%", 
+                 delta=ai_status['level'])
+    with col2:
+        status_emoji = "✅" if ai_status['ready'] else "⚠️"
+        status_text = "実用可能" if ai_status['ready'] else "学習中"
+        st.metric("📊 実用化状況", f"{status_emoji} {status_text}", 
+                 delta=f"{ai_status['stats']['total_sessions']}回学習")
+    with col3:
+        if ai_status['stats']['total_sessions'] > 0:
+            st.metric("📈 最新相関係数", 
+                     f"{ai_status['stats']['latest_correlation']:.3f}",
+                     delta=f"目標: 0.850+")
+        else:
+            st.metric("📈 最新相関係数", "未学習", delta="学習開始してください")
+    with col4:
+        if ai_status['stats']['total_sessions'] > 0:
+            st.metric("🎯 最新誤差(MAE)", 
+                     f"{ai_status['stats']['latest_mae']:.4f}",
+                     delta=f"目標: 0.010以下",
+                     delta_color="inverse")
+        else:
+            st.metric("🎯 最新誤差(MAE)", "未学習", delta="")
+    
+    # 詳細レポートはエクスパンダーで
+    if ai_status['stats']['total_sessions'] > 0:
+        with st.expander("📊 AI成長レポート（詳細）", expanded=False):
+            tab1, tab2, tab3 = st.tabs(["📈 成長状況", "📚 学習履歴", "🎯 改善アドバイス"])
+            
+            with tab1:
+                st.markdown("### 🎯 AI実用化進捗")
+                
+                # プログレスバー
+                st.progress(ai_status['confidence'] / 100, 
+                           text=f"信頼度: {ai_status['confidence']:.1f}% - {ai_status['level']}")
+                
+                col_a, col_b = st.columns(2)
+                with col_a:
+                    st.markdown("#### 📊 現在の性能")
+                    stats = ai_status['stats']
+                    perf_data = {
+                        "指標": ["相関係数", "平均誤差", "改善率", "学習回数", "総データ数"],
+                        "現在値": [
+                            f"{stats['latest_correlation']:.4f}",
+                            f"{stats['latest_mae']:.4f}",
+                            f"{stats['latest_improvement']:.1f}%",
+                            f"{stats['total_sessions']}回",
+                            f"{stats['total_pairs']}組"
+                        ],
+                        "目標値": ["0.850+", "0.010以下", "20%+", "5回+", "100組+"],
+                        "達成": [
+                            "✅" if stats['latest_correlation'] >= 0.85 else "🔄",
+                            "✅" if stats['latest_mae'] <= 0.01 else "🔄",
+                            "✅" if stats['latest_improvement'] >= 20 else "🔄",
+                            "✅" if stats['total_sessions'] >= 5 else "🔄",
+                            "✅" if stats['total_pairs'] >= 100 else "🔄"
+                        ]
+                    }
+                    st.dataframe(perf_data, use_container_width=True, hide_index=True)
+                
+                with col_b:
+                    st.markdown("#### 🎯 次のマイルストーン")
+                    milestone = ai_status['next_milestone']
+                    st.write(f"**目標:** {milestone['target']}")
+                    st.progress(milestone['progress'] / 100)
+                    st.info(f"💡 {milestone['needed']}")
+                    
+                    st.markdown("#### 📈 ベスト記録")
+                    st.write(f"**最高相関係数:** {stats['best_correlation']:.4f}")
+                    st.write(f"**最小誤差:** {stats['best_mae']:.4f}")
+                    st.write(f"**最大改善率:** {stats['best_improvement']:.1f}%")
+                
+                # 実用化判定
+                st.markdown("---")
+                if ai_status['ready']:
+                    st.success("""
+                    ### ✅ 実用化可能レベルに到達！
+                    
+                    **おめでとうございます！** このAIは本番アプリに搭載できる水準です。
+                    
+                    **次のステップ:**
+                    1. 🎯 モデルをエクスポート（`trained_fd_model.pkl`）
+                    2. 🚀 本番アプリケーションに統合
+                    3. 📊 実運用でのパフォーマンス監視
+                    4. 🔄 定期的な再学習で精度維持
+                    """)
+                else:
+                    st.warning(f"""
+                    ### ⚠️ 現在は学習中 - 信頼度 {ai_status['confidence']:.0f}%
+                    
+                    実用化には **信頼度75%以上** が必要です。
+                    あと **{75 - ai_status['confidence']:.0f}ポイント** の改善が必要です。
+                    
+                    **改善方法は「改善アドバイス」タブをご確認ください。**
+                    """)
+            
+            with tab2:
+                st.markdown("### 📚 学習履歴一覧")
+                if len(training_history_preview) > 0:
+                    history_data = []
+                    for i, record in enumerate(training_history_preview[-10:], 1):  # 最新10件
+                        metrics = record.get('metrics', {})
+                        history_data.append({
+                            "回": len(training_history_preview) - 10 + i,
+                            "日時": record.get('timestamp', '')[:16],
+                            "データ数": record.get('num_pairs', 0),
+                            "品質レベル": record.get('quality_level', '不明'),
+                            "拡張": record.get('augmentation_count', 0),
+                            "相関": f"{metrics.get('correlation_pred', 0):.3f}",
+                            "誤差": f"{metrics.get('mae_pred', 0):.4f}",
+                            "改善": f"{metrics.get('improvement', 0):.1f}%"
+                        })
+                    
+                    import pandas as pd
+                    st.dataframe(pd.DataFrame(history_data), use_container_width=True, hide_index=True)
+                    
+                    # グラフで成長を可視化
+                    st.markdown("#### 📈 成長グラフ")
+                    import matplotlib.pyplot as plt
+                    
+                    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
+                    
+                    sessions = list(range(1, len(training_history_preview) + 1))
+                    correlations = [h.get('metrics', {}).get('correlation_pred', 0) for h in training_history_preview]
+                    maes = [h.get('metrics', {}).get('mae_pred', 0) for h in training_history_preview]
+                    
+                    ax1.plot(sessions, correlations, marker='o', linewidth=2, markersize=6)
+                    ax1.axhline(y=0.85, color='g', linestyle='--', label='目標: 0.85')
+                    ax1.set_xlabel('学習回数')
+                    ax1.set_ylabel('相関係数')
+                    ax1.set_title('相関係数の推移')
+                    ax1.legend()
+                    ax1.grid(True, alpha=0.3)
+                    
+                    ax2.plot(sessions, maes, marker='s', linewidth=2, markersize=6, color='orange')
+                    ax2.axhline(y=0.01, color='g', linestyle='--', label='目標: 0.01')
+                    ax2.set_xlabel('学習回数')
+                    ax2.set_ylabel('平均絶対誤差 (MAE)')
+                    ax2.set_title('誤差の推移')
+                    ax2.legend()
+                    ax2.grid(True, alpha=0.3)
+                    
+                    plt.tight_layout()
+                    st.pyplot(fig)
+                else:
+                    st.info("まだ学習履歴がありません。学習モードで学習を開始してください。")
+            
+            with tab3:
+                st.markdown("### 💡 改善アドバイス")
+                for i, rec in enumerate(ai_status['recommendations'], 1):
+                    st.write(f"**{i}.** {rec}")
+                
+                st.markdown("---")
+                st.markdown("""
+                ### 📖 効果的な学習のポイント
+                
+                #### 1. データ量を増やす
+                - **目標:** 100組以上の画像ペア
+                - **方法:** データ拡張を活用（現在28種類利用可能）
+                - **効果:** 精度向上、過学習防止
+                
+                #### 2. 品質レベルを調整
+                - **low1-3:** 軽度劣化 - 学習が容易
+                - **low4-7:** 中度劣化 - バランスが良い（推奨）
+                - **low8-10:** 重度劣化 - 難易度高、実用的
+                
+                #### 3. データの多様性
+                - 異なる照明条件の画像
+                - 異なる被写体
+                - 異なるアングル
+                
+                #### 4. 定期的な学習
+                - 週1回以上の学習を推奨
+                - 新しいデータを追加して再学習
+                - 性能の安定性を確認
+                """)
+    else:
+        st.info("💡 学習を開始すると、AIの成長状況がここに表示されます。下の「学習モード」でデータを学習させてください。")
+    
+    st.markdown("---")
 
     # ============================================================
     # 🔄 自動モデル読み込み機能 - アプリ起動時に実行
@@ -1358,21 +1835,49 @@ def app():
         st.session_state['model_loaded'] = False
         st.session_state['persistent_model'] = None
         st.session_state['model_info'] = None
+        st.session_state['auto_load_attempted'] = False
         
         # 保存されたモデルを探す
         default_model_path = "trained_fd_model.pkl"
-        if os.path.exists(default_model_path):
+        history_path = "training_history.json"
+        
+        # モデルファイルと学習履歴の存在確認
+        model_exists = os.path.exists(default_model_path)
+        history_exists = os.path.exists(history_path)
+        
+        if model_exists:
             try:
                 model = load_model(default_model_path)
                 st.session_state['persistent_model'] = model
                 st.session_state['model_loaded'] = True
+                
+                # ファイルの更新日時を取得
+                model_mtime = os.path.getmtime(default_model_path)
+                model_date = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(model_mtime))
+                
                 st.session_state['model_info'] = {
                     'path': default_model_path,
                     'loaded_at': time.strftime('%Y-%m-%d %H:%M:%S'),
-                    'source': '自動読み込み'
+                    'trained_at': model_date,
+                    'source': '自動読み込み（前回の学習結果）',
+                    'file_size': os.path.getsize(default_model_path)
                 }
+                st.session_state['auto_load_attempted'] = True
             except Exception as e:
+                st.session_state['auto_load_error'] = str(e)
                 pass  # 読み込み失敗時は無視
+        
+        # 学習履歴の統計を取得
+        if history_exists:
+            try:
+                history = load_training_history()
+                st.session_state['history_stats'] = {
+                    'total_sessions': len(history),
+                    'last_trained': history[-1].get('timestamp', '不明') if history else '不明',
+                    'total_samples': sum(h.get('total_samples', 0) for h in history)
+                }
+            except:
+                pass
 
     gpu_auto = USE_CUPY
     st.sidebar.header("設定")
@@ -1387,9 +1892,29 @@ def app():
     st.sidebar.header("🤖 AIモデル状態")
     if st.session_state.get('model_loaded', False):
         model_info = st.session_state.get('model_info', {})
-        st.sidebar.success("✅ モデル読み込み済み")
-        st.sidebar.write(f"📁 {model_info.get('source', '不明')}")
-        st.sidebar.write(f"🕒 {model_info.get('loaded_at', '不明')}")
+        st.sidebar.success("✅ **モデル読み込み済み**")
+        
+        with st.sidebar.expander("📋 モデル詳細情報", expanded=True):
+            st.write(f"**読み込み元:** {model_info.get('source', '不明')}")
+            st.write(f"**学習日時:** {model_info.get('trained_at', '不明')}")
+            st.write(f"**読み込み時刻:** {model_info.get('loaded_at', '不明')}")
+            
+            # ファイルサイズを表示
+            file_size = model_info.get('file_size', 0)
+            if file_size > 0:
+                size_mb = file_size / (1024 * 1024)
+                st.write(f"**ファイルサイズ:** {size_mb:.2f} MB")
+            
+            # 学習履歴統計
+            if 'history_stats' in st.session_state:
+                stats = st.session_state['history_stats']
+                st.write("---")
+                st.write("**📚 学習履歴統計:**")
+                st.write(f"- 学習回数: {stats.get('total_sessions', 0)}回")
+                st.write(f"- 累計サンプル数: {stats.get('total_samples', 0):,}組")
+                st.write(f"- 最終学習: {stats.get('last_trained', '不明')}")
+        
+        st.sidebar.info("💡 このモデルは次回起動時も自動的に読み込まれます")
         
         # モデルをリセットするボタン
         if st.sidebar.button("🔄 モデルをリセット"):
@@ -1398,9 +1923,22 @@ def app():
             st.session_state['model_info'] = None
             st.rerun()
     else:
-        st.sidebar.warning("⚠️ モデル未読み込み")
-        st.sidebar.write("学習モードで学習するか、")
-        st.sidebar.write("推論モードでモデルをアップロードしてください")
+        st.sidebar.warning("⚠️ **モデル未読み込み**")
+        
+        # 自動読み込みエラーの場合
+        if 'auto_load_error' in st.session_state:
+            st.sidebar.error(f"エラー: {st.session_state['auto_load_error']}")
+        
+        st.sidebar.write("**モデルを準備する方法:**")
+        st.sidebar.write("1. 学習モードで新規学習")
+        st.sidebar.write("2. 推論モードでモデルをアップロード")
+        
+        # 学習履歴がある場合の表示
+        if 'history_stats' in st.session_state:
+            stats = st.session_state['history_stats']
+            if stats.get('total_sessions', 0) > 0:
+                st.sidebar.info(f"📚 学習履歴: {stats['total_sessions']}回\n最終学習: {stats['last_trained']}")
+                st.sidebar.write("💡 モデルファイルが見つかりません。再学習してください。")
     
     # ============================================================
     # 📚 学習履歴を表示
@@ -1408,13 +1946,104 @@ def app():
     st.sidebar.markdown("---")
     st.sidebar.header("📚 学習履歴")
     training_history = load_training_history()
+    
+    # AI準備状況評価
+    ai_readiness = calculate_ai_readiness(training_history)
+    
+    # AIステータスダッシュボード
+    st.sidebar.markdown("### 🎯 AI実用化ステータス")
+    
+    # 信頼度メーター
+    confidence = ai_readiness['confidence']
+    confidence_color = (
+        "🟢" if confidence >= 75 else
+        "🟡" if confidence >= 50 else
+        "🟠" if confidence >= 30 else
+        "🔴"
+    )
+    st.sidebar.metric(
+        label="信頼度",
+        value=f"{confidence:.0f}%",
+        delta=f"{ai_readiness['level']}"
+    )
+    
+    # プログレスバー
+    st.sidebar.progress(confidence / 100)
+    
+    # 実用可否の判定
+    if ai_readiness['ready']:
+        st.sidebar.success("✅ **実用可能** - 本番アプリに搭載できます")
+    else:
+        st.sidebar.warning("⚠️ **学習中** - さらなるデータが必要です")
+    
+    st.sidebar.write(f"**レベル:** {ai_readiness['level']}")
+    st.sidebar.write(f"_{ai_readiness['level_desc']}_")
+    
+    # 統計情報
+    with st.sidebar.expander("📊 詳細統計"):
+        stats = ai_readiness['stats']
+        st.write(f"**学習回数:** {stats['total_sessions']}回")
+        st.write(f"**総データ数:** {stats['total_pairs']}組")
+        st.write(f"**最高相関:** {stats['best_correlation']:.3f}")
+        st.write(f"**平均相関:** {stats['avg_correlation']:.3f}")
+        st.write(f"**最小誤差:** {stats['best_mae']:.4f}")
+        st.write(f"**平均誤差:** {stats['avg_mae']:.4f}")
+    
+    # 次のマイルストーン
+    milestone = ai_readiness['next_milestone']
+    with st.sidebar.expander("🎯 次の目標"):
+        st.write(f"**目標:** {milestone['target']}")
+        st.progress(milestone['progress'] / 100)
+        st.write(f"_{milestone['needed']}_")
+    
+    # 改善アドバイス
+    with st.sidebar.expander("💡 改善アドバイス"):
+        for rec in ai_readiness['recommendations']:
+            st.write(f"• {rec}")
+    
+    # 🔍 デバッグ情報（開発者向け）
+    with st.sidebar.expander("🔍 デバッグ情報"):
+        st.write("### 最新学習データ")
+        if training_history and len(training_history) > 0:
+            latest = training_history[-1]
+            st.json({
+                'timestamp': latest.get('timestamp'),
+                'num_pairs': latest.get('num_pairs'),
+                'total_samples': latest.get('total_samples'),
+                'quality_level': latest.get('quality_level'),
+                'augmentation_count': latest.get('augmentation_count'),
+                'metrics': latest.get('metrics', {})
+            })
+            
+            st.write("### 信頼度計算に使用した値")
+            metrics = latest.get('metrics', {})
+            st.write(f"- correlation_pred: {metrics.get('correlation_pred', 'なし')}")
+            st.write(f"- improvement: {metrics.get('improvement', 'なし')}")
+            st.write(f"- mae_pred: {metrics.get('mae_pred', 'なし')}")
+            st.write(f"**計算された信頼度:** {ai_readiness['confidence']:.1f}%")
+            
+            # 履歴ファイルをリセットするボタン
+            st.write("---")
+            if st.button("🗑️ 学習履歴をリセット", help="古いデータをクリアして新しく学習し直します"):
+                try:
+                    if os.path.exists("training_history.json"):
+                        os.remove("training_history.json")
+                        st.success("✅ 学習履歴をリセットしました")
+                        st.rerun()
+                except Exception as e:
+                    st.error(f"エラー: {e}")
+        else:
+            st.write("学習履歴がありません")
+    
+    # 学習履歴詳細
     if training_history:
-        st.sidebar.success(f"✅ {len(training_history)}回の学習記録")
+        st.sidebar.write(f"")
+        st.sidebar.write(f"**学習記録:** {len(training_history)}回")
         
         # 最新の学習情報を表示
         if len(training_history) > 0:
             latest = training_history[-1]
-            st.sidebar.write(f"**最新学習:** {latest.get('timestamp', '不明')}")
+            st.sidebar.write(f"**最新学習:** {latest.get('timestamp', '不明')[:16]}")
             if 'metrics' in latest:
                 metrics = latest['metrics']
                 corr = metrics.get('correlation_pred', 0)
@@ -1428,7 +2057,7 @@ def app():
         
         # 学習成長分析
         if len(training_history) >= 2:
-            with st.sidebar.expander("📊 AI成長分析"):
+            with st.sidebar.expander("� AI成長分析"):
                 growth_analysis = analyze_learning_growth(training_history)
                 st.write(f"**成長トレンド:** {growth_analysis['trend']} {growth_analysis['trend_emoji']}")
                 st.write(f"**相関係数の変化:** {growth_analysis['correlation_change']:+.3f}")
@@ -1517,6 +2146,54 @@ def app():
         - ✅ **R²スコア**: 0.5以上
         """)
     
+    st.sidebar.markdown("---")
+    
+    # 🚀 次のステップガイド（AI準備状況に応じて表示）
+    if ai_status['stats']['total_sessions'] > 0:
+        with st.sidebar.expander("🚀 本番アプリ開発について"):
+            if ai_status['ready']:
+                st.success("✅ AIは実用レベルです！")
+            else:
+                st.warning(f"⚠️ 信頼度 {ai_status['confidence']:.0f}% - あと{75-ai_status['confidence']:.0f}ポイント")
+            
+            st.markdown("""
+            ### 🎯 アプリの最終目標
+            
+            低画質画像でも正確なフラクタル次元を予測できるAI搭載アプリ
+            
+            ---
+            
+            ### ✅ 推奨: このアプリを改良
+            
+            **メリット:**
+            - 学習と推論が統合済み
+            - モデル更新が容易
+            - 開発時間が短い
+            
+            **改良の流れ:**
+            1. 信頼度75%達成まで学習
+            2. 推論モードをメインに
+            3. 自動品質判定を追加
+            4. UIをシンプル化
+            
+            ---
+            
+            ### 🔄 または: 新規アプリ作成
+            
+            **方法:**
+            1. `trained_fd_model.pkl` をエクスポート
+            2. 推論専用アプリを新規作成
+            3. シンプルなUIで実装
+            
+            **デメリット:** 開発時間、メンテナンス2倍
+            
+            ---
+            
+            **💡 どちらを選ぶべき?**
+            
+            → **改良推奨** (効率的、柔軟性高)
+            """)
+
     st.sidebar.markdown("---")
 
     # アプリケーションモード選択
@@ -1788,6 +2465,92 @@ def app():
     # ============================================================
     st.header("🎓 学習モード - AIを学習させる")
     
+    # 🎯 学習前の診断とアドバイス
+    with st.expander("💡 効果的な学習のためのガイド", expanded=True):
+        st.markdown("""
+        ### 🎯 信頼度10%から75%以上を目指すために
+        
+        #### ⚠️ 信頼度が低い主な原因
+        
+        1. **データ拡張が不足** ← 最重要！
+           - 元画像30枚だけでは不十分
+           - データ拡張で100組以上に増やす必要あり
+        
+        2. **品質レベルの選択ミス**
+           - low1-3: 差が小さすぎて学習困難
+           - **推奨: low4-7** (中度劣化、バランス良好)
+           - 上級: low8-10 (重度劣化、実用的)
+           - **⚠️ 全レベル (low1-10) は非推奨** → 差が大きすぎてMAE悪化
+        
+        3. **単一レベルの学習**
+           - 1つのレベルだけでは汎用性不足
+           - **グループ選択で複数レベル同時学習を推奨**
+        
+        ---
+        
+        ### ✅ 推奨設定（信頼度75%以上を目指す）
+        
+        | 項目 | 推奨設定 | 理由 |
+        |------|----------|------|
+        | **品質レベル** | 🟡 low4-7 (グループ) | バランスが良く、112組のデータ |
+        | **データ拡張** | 15種類以上選択 | 最低100組、理想200組以上 |
+        | **推奨拡張** | 水平反転、回転、明るさ、ガウシアン | 効果的な変化 |
+        
+        ---
+        
+        ### 📊 設定例：信頼度75%達成の実例
+        
+        **設定:**
+        - 元画像: 30組
+        - 品質レベル: low4-7 (グループ選択)
+        - データ拡張: 20種類
+        - 期待データ数: 30 × 4レベル × (1 + 20拡張) = **2,520組**
+        
+        **結果予測:**
+        - 相関係数: 0.85-0.90
+        - 誤差(MAE): 0.005-0.010
+        - 信頼度: **75-85%** (実用レベル)
+        
+        ---
+        
+        ### 🚀 今すぐできる改善策
+        
+        1. **品質レベル**を「🟡 low4-7 (中度劣化)」に変更
+        2. **データ拡張**タブで以下を選択:
+           - ✅ 水平反転
+           - ✅ 垂直反転  
+           - ✅ 90度回転
+           - ✅ 180度回転
+           - ✅ 明るさ調整（暗く）
+           - ✅ 明るさ調整（明るく）
+           - ✅ コントラスト調整（低）
+           - ✅ コントラスト調整（高）
+           - ✅ ガウシアンブラー
+           - ✅ ガウシアンノイズ
+           - ✅ ソルトペッパーノイズ
+           - ✅ JPEG圧縮（品質50）
+           - ✅ シャープネス強調
+           - ✅ エッジ強調
+           - ✅ ヒストグラム平坦化
+        
+        3. **「すべて選択」ボタン**をクリック（28種類すべて選択）
+        
+        **期待される結果:**
+        - データ数: 30 × 4 × 29 = **3,480組**
+        - 信頼度: **80-90%** (プロ～マスターレベル)
+        """)
+        
+        st.success("""
+        ### ✨ 簡単な手順
+        
+        1. 下の「品質レベルグループ」で **「📘 グループ選択」** を選ぶ
+        2. **「🟡 low4-7 (中度劣化 - 普通)」** を選択
+        3. 「データ拡張」タブで **「すべて選択」** をクリック
+        4. **「🚀 学習開始」** ボタンをクリック
+        5. 10-15分待つ（GPU使用時は5-8分）
+        6. 信頼度が **75%以上** になることを確認！
+        """)
+    
     # 既存モデルがある場合は通知
     if st.session_state.get('model_loaded', False):
         model_info = st.session_state.get('model_info', {})
@@ -1857,21 +2620,34 @@ def app():
                     "品質グループを選択",
                     [
                         "🟢 low1-3 (軽度劣化 - 易しい)",
-                        "🟡 low4-7 (中度劣化 - 普通)",
+                        "🟡 low4-7 (中度劣化 - 普通) 🌟推奨",
                         "🔴 low8-10 (重度劣化 - 難しい)",
-                        "🌈 全レベル (low1-10)"
+                        "🌈 全レベル (low1-10) ⚠️非推奨"
                     ],
+                    index=1,  # デフォルトでlow4-7を選択
                     help="複数の品質レベルを一括で学習に使用します"
                 )
                 
                 if quality_group_select == "🟢 low1-3 (軽度劣化 - 易しい)":
                     quality_levels = ["low1", "low2", "low3"]
-                elif quality_group_select == "🟡 low4-7 (中度劣化 - 普通)":
+                elif quality_group_select == "🟡 low4-7 (中度劣化 - 普通) 🌟推奨":
                     quality_levels = ["low4", "low5", "low6", "low7"]
                 elif quality_group_select == "🔴 low8-10 (重度劣化 - 難しい)":
                     quality_levels = ["low8", "low9", "low10"]
                 else:  # 全レベル
                     quality_levels = [f"low{i}" for i in range(1, 11)]
+                    st.warning("""
+                    ⚠️ **全レベル (low1-10) は推奨されません**
+                    
+                    **理由:**
+                    - 品質差が大きすぎてAIが混乱します
+                    - MAE（平均絶対誤差）が悪化します
+                    - 信頼度が70%以下に留まります
+                    
+                    **推奨:**
+                    - 🟡 low4-7 (中度劣化) を選択してください
+                    - 信頼度85%以上を目指せます
+                    """)
                 
                 st.info(f"✅ 選択: {', '.join(quality_levels)} ({len(quality_levels)}レベル)")
                 quality_level = quality_levels[0]  # 後方互換性のため最初のレベルを代入
@@ -2181,6 +2957,9 @@ def app():
         **注意**: 拡張により処理時間が増加します
         """)
         
+        # augmentation_methodsを初期化（use_augmentationの外側で定義）
+        augmentation_methods = []
+        
         use_augmentation = st.checkbox(
             "データ拡張を使用する",
             value=len(high_imgs) < 10,
@@ -2203,6 +2982,7 @@ def app():
                     st.session_state.pop('color_select_all', None)
                     st.session_state.pop('quality_select_all', None)
                     st.session_state.pop('ai_select_all', None)
+                    st.session_state.pop('recommended_preset', None)
                     st.rerun()
             with col_btn2:
                 if st.button("❌ 全て解除", use_container_width=True, help="全ての拡張機能をオフにします"):
@@ -2213,6 +2993,7 @@ def app():
                     st.session_state.pop('color_select_all', None)
                     st.session_state.pop('quality_select_all', None)
                     st.session_state.pop('ai_select_all', None)
+                    st.session_state.pop('recommended_preset', None)
                     st.rerun()
             with col_btn3:
                 # 現在の状態を表示
@@ -2221,6 +3002,48 @@ def app():
                     st.success("✅ 全選択中 (28種類)")
                 elif select_all_state == False:
                     st.warning("全解除中")
+            
+            # 🚀 クイック推奨設定ボタン（新規追加）
+            st.markdown("---")
+            st.markdown("### 🚀 クイック設定")
+            col_quick1, col_quick2 = st.columns(2)
+            
+            with col_quick1:
+                if st.button("⭐ 推奨設定（15種類）", use_container_width=True, type="secondary",
+                            help="信頼度75%達成に最も効果的な15種類を自動選択\n期待データ数: 30×4レベル×16 = 1,920組"):
+                    # 推奨設定を適用
+                    st.session_state['select_all_augmentation'] = None  # 全選択状態をクリア
+                    st.session_state['geo_select_all'] = None
+                    st.session_state['bright_select_all'] = None
+                    st.session_state['color_select_all'] = None
+                    st.session_state['quality_select_all'] = None
+                    st.session_state['ai_select_all'] = None
+                    
+                    # 推奨設定フラグを立てる
+                    st.session_state['recommended_preset'] = True
+                    st.success("✅ 推奨設定を適用！ 信頼度75%以上を目指します")
+                    st.info("📊 期待データ数: 約1,920組（30画像 × 4レベル × 16倍）")
+                    st.rerun()
+            
+            with col_quick2:
+                if st.button("🏆 マスター設定（全28種類）", use_container_width=True, type="secondary",
+                            help="信頼度90%以上を目指す上級者向け設定\n期待データ数: 30×4レベル×29 = 3,480組"):
+                    st.session_state['select_all_augmentation'] = True
+                    st.session_state.pop('geo_select_all', None)
+                    st.session_state.pop('bright_select_all', None)
+                    st.session_state.pop('color_select_all', None)
+                    st.session_state.pop('quality_select_all', None)
+                    st.session_state.pop('ai_select_all', None)
+                    st.session_state.pop('recommended_preset', None)
+                    st.success("✅ マスター設定を適用！ 信頼度90%以上を目指します")
+                    st.info("📊 期待データ数: 約3,480組（30画像 × 4レベル × 29倍）")
+                    st.rerun()
+            
+            st.markdown("---")
+            
+            # 全選択/解除の状態を取得
+            select_all = st.session_state.get('select_all_augmentation', None)
+            recommended = st.session_state.get('recommended_preset', False)
             
             # 全選択/解除の状態を取得
             select_all = st.session_state.get('select_all_augmentation', None)
@@ -2252,16 +3075,34 @@ def app():
                 default_geo = True if (select_all or geo_select) else (False if (select_all == False or geo_select == False) else True)
                 default_geo_off = False if (select_all == False or geo_select == False) else (True if (select_all or geo_select) else False)
                 
+                # 推奨設定の場合の値を設定
+                if recommended:
+                    rec_flip_h = True
+                    rec_flip_v = False
+                    rec_rot90 = True
+                    rec_rot180 = True
+                    rec_rot270 = False
+                    rec_rot_small_cw = False
+                    rec_rot_small_ccw = False
+                else:
+                    rec_flip_h = default_geo
+                    rec_flip_v = default_geo_off
+                    rec_rot90 = default_geo
+                    rec_rot180 = default_geo_off
+                    rec_rot270 = default_geo_off
+                    rec_rot_small_cw = default_geo_off
+                    rec_rot_small_ccw = default_geo_off
+                
                 col1, col2 = st.columns(2)
                 with col1:
-                    use_flip_h = st.checkbox("🔄 水平反転 (左右反転)", value=default_geo, help="画像を左右反転", key="aug_flip_h")
-                    use_flip_v = st.checkbox("🔃 垂直反転 (上下反転)", value=default_geo_off, help="画像を上下反転", key="aug_flip_v")
-                    use_rotate_90 = st.checkbox("↩️ 90度回転", value=default_geo, help="時計回りに90度回転", key="aug_rot90")
-                    use_rotate_180 = st.checkbox("🔁 180度回転", value=default_geo_off, help="180度回転", key="aug_rot180")
+                    use_flip_h = st.checkbox("🔄 水平反転 (左右反転)", value=rec_flip_h, help="画像を左右反転", key="aug_flip_h")
+                    use_flip_v = st.checkbox("🔃 垂直反転 (上下反転)", value=rec_flip_v, help="画像を上下反転", key="aug_flip_v")
+                    use_rotate_90 = st.checkbox("↩️ 90度回転", value=rec_rot90, help="時計回りに90度回転", key="aug_rot90")
+                    use_rotate_180 = st.checkbox("🔁 180度回転", value=rec_rot180, help="180度回転", key="aug_rot180")
                 with col2:
-                    use_rotate_270 = st.checkbox("↪️ 270度回転", value=default_geo_off, help="時計回りに270度回転", key="aug_rot270")
-                    use_rotate_small_cw = st.checkbox("🔄 微小回転(+5°) 🌟", value=default_geo_off, help="時計回りに5度回転 - 方向不変性学習に効果的", key="aug_rot_small_cw")
-                    use_rotate_small_ccw = st.checkbox("🔄 微小回転(-5°) 🌟", value=default_geo_off, help="反時計回りに5度回転 - 方向不変性学習に効果的", key="aug_rot_small_ccw")
+                    use_rotate_270 = st.checkbox("↪️ 270度回転", value=rec_rot270, help="時計回りに270度回転", key="aug_rot270")
+                    use_rotate_small_cw = st.checkbox("🔄 微小回転(+5°) 🌟", value=rec_rot_small_cw, help="時計回りに5度回転 - 方向不変性学習に効果的", key="aug_rot_small_cw")
+                    use_rotate_small_ccw = st.checkbox("🔄 微小回転(-5°) 🌟", value=rec_rot_small_ccw, help="反時計回りに5度回転 - 方向不変性学習に効果的", key="aug_rot_small_ccw")
             
             with tab2:
                 st.markdown("**明るさ・コントラスト - 画像の明るさやコントラストを調整**")
@@ -2280,15 +3121,21 @@ def app():
                 bright_select = st.session_state.get('bright_select_all', None)
                 default_bright = False if (select_all == False or bright_select == False) else (True if (select_all or bright_select) else False)
                 
+                # 推奨設定の場合の値を設定（明るさ調整は重要）
+                if recommended:
+                    rec_bright = True  # 明るさ系は全て推奨
+                else:
+                    rec_bright = default_bright
+                
                 col1, col2 = st.columns(2)
                 with col1:
-                    use_brightness_up = st.checkbox("☀️ 明るさ増加 (+20%)", value=default_bright, help="画像を20%明るく", key="aug_br_up")
-                    use_brightness_down = st.checkbox("🌙 明るさ減少 (-20%)", value=default_bright, help="画像を20%暗く", key="aug_br_down")
-                    use_contrast_up = st.checkbox("📈 コントラスト増加", value=default_bright, help="コントラストを強く", key="aug_cont_up")
+                    use_brightness_up = st.checkbox("☀️ 明るさ増加 (+20%)", value=rec_bright, help="画像を20%明るく", key="aug_br_up")
+                    use_brightness_down = st.checkbox("🌙 明るさ減少 (-20%)", value=rec_bright, help="画像を20%暗く", key="aug_br_down")
+                    use_contrast_up = st.checkbox("📈 コントラスト増加", value=rec_bright, help="コントラストを強く", key="aug_cont_up")
                 with col2:
-                    use_contrast_down = st.checkbox("📉 コントラスト減少", value=default_bright, help="コントラストを弱く", key="aug_cont_down")
-                    use_gamma_bright = st.checkbox("✨ ガンマ補正 (明るく)", value=default_bright, help="ガンマ補正で明るく", key="aug_gamma_br")
-                    use_gamma_dark = st.checkbox("🌑 ガンマ補正 (暗く)", value=default_bright, help="ガンマ補正で暗く", key="aug_gamma_dk")
+                    use_contrast_down = st.checkbox("📉 コントラスト減少", value=rec_bright, help="コントラストを弱く", key="aug_cont_down")
+                    use_gamma_bright = st.checkbox("✨ ガンマ補正 (明るく)", value=rec_bright if recommended else default_bright, help="ガンマ補正で明るく", key="aug_gamma_br")
+                    use_gamma_dark = st.checkbox("🌑 ガンマ補正 (暗く)", value=rec_bright if recommended else default_bright, help="ガンマ補正で暗く", key="aug_gamma_dk")
             
             with tab3:
                 st.markdown("**色調整 - 画像の色合いや彩度を変更**")
@@ -2307,14 +3154,17 @@ def app():
                 color_select = st.session_state.get('color_select_all', None)
                 default_color = False if (select_all == False or color_select == False) else (True if (select_all or color_select) else False)
                 
+                # 推奨設定では色調整は控えめに
+                rec_color = False if recommended else default_color
+                
                 col1, col2 = st.columns(2)
                 with col1:
-                    use_saturation_up = st.checkbox("🌈 彩度増加", value=default_color, help="色を鮮やかに", key="aug_sat_up")
-                    use_saturation_down = st.checkbox("🌫️ 彩度減少", value=default_color, help="色を淡く", key="aug_sat_down")
-                    use_hue_shift = st.checkbox("🎨 色相シフト", value=default_color, help="色合いを変更", key="aug_hue")
+                    use_saturation_up = st.checkbox("🌈 彩度増加", value=rec_color, help="色を鮮やかに", key="aug_sat_up")
+                    use_saturation_down = st.checkbox("🌫️ 彩度減少", value=rec_color, help="色を淡く", key="aug_sat_down")
+                    use_hue_shift = st.checkbox("🎨 色相シフト", value=rec_color, help="色合いを変更", key="aug_hue")
                 with col2:
-                    use_temp_warm = st.checkbox("🔥 温度調整(暖色) 🌟", value=default_color, help="照明条件の変化に対応 - AI学習に効果的", key="aug_temp_warm")
-                    use_temp_cool = st.checkbox("❄️ 温度調整(寒色) 🌟", value=default_color, help="照明条件の変化に対応 - AI学習に効果的", key="aug_temp_cool")
+                    use_temp_warm = st.checkbox("🔥 温度調整(暖色) 🌟", value=rec_color, help="照明条件の変化に対応 - AI学習に効果的", key="aug_temp_warm")
+                    use_temp_cool = st.checkbox("❄️ 温度調整(寒色) 🌟", value=rec_color, help="照明条件の変化に対応 - AI学習に効果的", key="aug_temp_cool")
             
             with tab4:
                 st.markdown("**画質処理 - ノイズやぼかし、シャープ化などの処理**")
@@ -2333,15 +3183,23 @@ def app():
                 quality_select = st.session_state.get('quality_select_all', None)
                 default_quality = False if (select_all == False or quality_select == False) else (True if (select_all or quality_select) else False)
                 
+                # 推奨設定では重要な画質処理を選択
+                if recommended:
+                    rec_quality = True
+                    rec_quality_off = False
+                else:
+                    rec_quality = default_quality
+                    rec_quality_off = default_quality
+                
                 col1, col2 = st.columns(2)
                 with col1:
-                    use_noise = st.checkbox("📡 ノイズ追加", value=default_quality, help="ガウシアンノイズを追加", key="aug_noise")
-                    use_blur = st.checkbox("🌀 ぼかし", value=default_quality, help="ガウシアンぼかしを適用", key="aug_blur")
-                    use_sharpen = st.checkbox("🔪 シャープ化", value=default_quality, help="エッジを強調", key="aug_sharp")
+                    use_noise = st.checkbox("📡 ノイズ追加", value=rec_quality, help="ガウシアンノイズを追加", key="aug_noise")
+                    use_blur = st.checkbox("🌀 ぼかし", value=rec_quality, help="ガウシアンぼかしを適用", key="aug_blur")
+                    use_sharpen = st.checkbox("🔪 シャープ化", value=rec_quality, help="エッジを強調", key="aug_sharp")
                 with col2:
-                    use_equalize = st.checkbox("📊 ヒストグラム均等化", value=default_quality, help="コントラストを自動調整", key="aug_eq")
-                    use_median = st.checkbox("🔲 メディアンフィルタ 🌟", value=default_quality, help="ノイズ除去 - フラクタル構造保持に効果的", key="aug_median")
-                    use_bilateral = st.checkbox("🎭 バイラテラル 🌟", value=default_quality, help="エッジ保存平滑化 - AI学習に効果的", key="aug_bilateral")
+                    use_equalize = st.checkbox("📊 ヒストグラム均等化", value=rec_quality_off, help="コントラストを自動調整", key="aug_eq")
+                    use_median = st.checkbox("🔲 メディアンフィルタ 🌟", value=rec_quality_off, help="ノイズ除去 - フラクタル構造保持に効果的", key="aug_median")
+                    use_bilateral = st.checkbox("🎭 バイラテラル 🌟", value=rec_quality_off, help="エッジ保存平滑化 - AI学習に効果的", key="aug_bilateral")
             
             # 🎯 AI学習最適化タブ (新規追加)
             with tab5:
@@ -2370,8 +3228,8 @@ def app():
                     use_clahe = st.checkbox("🔆 CLAHE 🌟", value=default_ai, help="適応的ヒストグラム均等化 - 局所的テクスチャ強調", key="aug_clahe")
                     use_unsharp = st.checkbox("🔍 アンシャープマスク 🌟", value=default_ai, help="エッジ強調 - フラクタル構造の境界明確化", key="aug_unsharp")
             
-            # 選択された拡張手法を収集
-            augmentation_methods = []
+            # 選択された拡張手法を収集（既に初期化済みのリストをクリアして再構築）
+            augmentation_methods.clear()
             
             # 幾何学変換
             if use_flip_h:
@@ -2520,12 +3378,33 @@ def app():
                 # ============================================================
                 st.session_state['persistent_model'] = model
                 st.session_state['model_loaded'] = True
+                
+                # ファイルの更新日時を取得
+                model_mtime = os.path.getmtime(model_path)
+                model_date = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(model_mtime))
+                
                 st.session_state['model_info'] = {
                     'path': model_path,
                     'loaded_at': time.strftime('%Y-%m-%d %H:%M:%S'),
-                    'source': '学習モード'
+                    'trained_at': model_date,
+                    'source': '学習モード（今回の学習）',
+                    'file_size': os.path.getsize(model_path)
                 }
-                st.info("✅ モデルを永続化しました。推論モードでも使用できます。")
+                
+                st.success("""
+                ✅ **モデルを永続化しました**
+                
+                **保存内容:**
+                - 🤖 学習済みAIモデル → `trained_fd_model.pkl`
+                - 📚 学習履歴 → `training_history.json`
+                
+                **次回起動時:**
+                - ✅ このモデルが自動的に読み込まれます
+                - ✅ 学習履歴が引き継がれます
+                - ✅ すぐに推論モードで解析できます
+                
+                💡 アプリを閉じても、あなたのAIの知識は保存されています！
+                """)
                 
                 # モデルダウンロードボタン
                 with open(model_path, 'rb') as f:
@@ -2563,7 +3442,42 @@ def app():
                 
                 history_path = save_training_history(training_record)
                 if history_path:
-                    st.success(f"📊 学習履歴を保存しました: {history_path}")
+                    # 学習履歴統計を更新
+                    all_history = load_training_history()
+                    st.session_state['history_stats'] = {
+                        'total_sessions': len(all_history),
+                        'last_trained': training_record['timestamp'],
+                        'total_samples': sum(h.get('total_samples', 0) for h in all_history)
+                    }
+                    
+                    st.info(f"""
+                    📊 **学習履歴を保存しました**
+                    
+                    - 📁 ファイル: `{history_path}`
+                    - 🎓 今回の学習回数: {len(all_history)}回目
+                    - 📈 累計学習データ: {st.session_state['history_stats']['total_samples']:,}組
+                    
+                    💾 この履歴は次回起動時も保持されます
+                    """)
+                
+                # ⚠️ 全レベル使用時の警告
+                if len(quality_levels) >= 10:
+                    st.warning("""
+                    ⚠️ **全レベル (low1-10) を使用しています**
+                    
+                    **現在の状況:**
+                    - 品質差が大きすぎるため、MAEが悪化している可能性があります
+                    - 信頼度が70%以下に留まる可能性があります
+                    
+                    **改善策:**
+                    1. 品質レベルを **「🟡 low4-7 (中度劣化)」** に変更
+                    2. データ拡張を **「マスター設定 (28種類)」** に設定
+                    3. 再学習を実行
+                    
+                    **期待される結果:**
+                    - MAE: 0.03以下
+                    - 信頼度: 85%以上
+                    """)
                 
                 # ============================================================
                 # 🎯 AI性能評価を表示
@@ -2600,6 +3514,26 @@ def app():
                         )
                     
                     st.info(f"{evaluation['emoji']} **{evaluation['comment']}**")
+                    
+                    # MAEが高い場合の警告
+                    if metrics.get('mae_pred', 1.0) > 0.04 and len(quality_levels) >= 10:
+                        st.error("""
+                        ⚠️ **MAEが高いです (0.04以上)**
+                        
+                        **原因:**
+                        - 全レベル (low1-10) を使用しているため、品質差が大きすぎます
+                        - low1 (軽度劣化) と low10 (重度劣化) では復元難易度が異なります
+                        - AIが一貫した補正ルールを学習できていません
+                        
+                        **解決策:**
+                        1. 品質レベルを **「🟡 low4-7」** に変更して再学習
+                        2. または **「🔴 low8-10」** (重度劣化専門) を選択
+                        3. データ拡張を28種類 (マスター設定) に増やす
+                        
+                        **期待される改善:**
+                        - MAE: 0.04 → 0.02-0.03
+                        - 信頼度: 70% → 85%以上
+                        """)
                     
                     # 詳細分析
                     with st.expander("📊 詳細分析"):
