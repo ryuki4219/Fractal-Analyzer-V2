@@ -712,5 +712,56 @@
       "improvement": 79.19816219504919,
       "num_samples": 3480
     }
+  },
+  {
+    "timestamp": "2025-10-27 18:06:20",
+    "num_pairs": 2610,
+    "quality_level": "low8",
+    "augmentation_count": 28,
+    "augmentation_types": [
+      "flip_h",
+      "flip_v",
+      "rotate_90",
+      "rotate_180",
+      "rotate_270",
+      "rotate_small_cw",
+      "rotate_small_ccw",
+      "brightness_up",
+      "brightness_down",
+      "contrast_up",
+      "contrast_down",
+      "gamma_bright",
+      "gamma_dark",
+      "saturation_up",
+      "saturation_down",
+      "hue_shift",
+      "temp_warm",
+      "temp_cool",
+      "noise",
+      "blur",
+      "sharpen",
+      "equalize",
+      "median",
+      "bilateral",
+      "scale_up",
+      "scale_down",
+      "clahe",
+      "unsharp"
+    ],
+    "total_samples": 2610,
+    "model_params": {
+      "n_estimators": 400,
+      "max_depth": 8,
+      "learning_rate": 0.05
+    },
+    "metrics": {
+      "correlation_low": 0.2248828262090683,
+      "correlation_pred": 0.9353705048561096,
+      "mae_low": 0.3859419524669647,
+      "mae_pred": 0.03890535235404968,
+      "r2_score": 0.8665488958358765,
+      "improvement": 89.91937722619573,
+      "num_samples": 2610
+    }
   }
 ]
