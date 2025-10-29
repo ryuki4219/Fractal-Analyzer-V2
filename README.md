@@ -4,12 +4,59 @@
 
 ## 起動方法
 
-### 方法1: デスクトップから起動（推奨）
-1. **初回のみ**: デスクトップショートカット作成.bat を実行
-2. デスクトップの Fractal Analyzer V2 をダブルクリック
+### 🚀 **最も確実な方法（推奨）**
+
+1. **エクスプローラーでフォルダを開く**
+2. **`簡単起動.bat`** をダブルクリック
+3. ブラウザで **http://localhost:8501** を開く
+
+### 方法1: デスクトップから起動
+1. **初回のみ**: `デスクトップショートカット作成.bat` を実行
+2. デスクトップの `Fractal Analyzer V2` をダブルクリック
+3. ブラウザで **http://localhost:8501** を開く
 
 ### 方法2: 直接起動
-起動.bat をダブルクリック
+1. `起動.bat` をダブルクリック
+2. ブラウザで **http://localhost:8501** を開く
+
+### 方法3: コマンドラインから起動
+```cmd
+.venv\Scripts\activate.bat
+streamlit run fractal_app.py --server.port 8501
+```
+
+### ⚠️ トラブルシューティング
+
+#### アプリが開けない場合
+
+1. **`トラブルシューティング.bat`** を実行して診断
+2. 表示されるエラーメッセージを確認
+3. 以下の解決策を試す：
+
+#### ケース1: ブラウザが自動で開かない
+- 手動で **http://localhost:8501** を開く
+- Chrome、Edge、Firefoxなどを使用
+
+#### ケース2: ポートが使用中
+```cmd
+REM 既存のプロセスを終了
+taskkill /F /IM streamlit.exe
+REM 再起動
+起動.bat
+```
+
+#### ケース3: ライブラリエラー
+```cmd
+.venv\Scripts\activate.bat
+pip install -r requirements.txt
+```
+
+#### ケース4: 仮想環境が見つからない
+```cmd
+python -m venv .venv
+.venv\Scripts\activate.bat
+pip install -r requirements.txt
+```
 
 ブラウザで自動的に開きます: http://localhost:8501
 

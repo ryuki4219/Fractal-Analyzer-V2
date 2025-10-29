@@ -1592,7 +1592,58 @@ def app():
     st.markdown("CuPy が利用可能な場合は GPU を自動で使います。無ければ CPU (NumPy) で処理します。")
     
     # ============================================================
-    # 🔔 起動時の継続性通知（初回のみ表示）
+    # � 自動モデル読み込み機能 - アプリ起動時に実行（最初に実行）
+    # ============================================================
+    if 'model_loaded' not in st.session_state:
+        st.session_state['model_loaded'] = False
+        st.session_state['persistent_model'] = None
+        st.session_state['model_info'] = None
+        st.session_state['auto_load_attempted'] = False
+        
+        # 保存されたモデルを探す
+        default_model_path = "trained_fd_model.pkl"
+        history_path = "training_history.json"
+        
+        # モデルファイルと学習履歴の存在確認
+        model_exists = os.path.exists(default_model_path)
+        history_exists = os.path.exists(history_path)
+        
+        if model_exists:
+            try:
+                model = load_model(default_model_path)
+                st.session_state['persistent_model'] = model
+                st.session_state['model_loaded'] = True
+                
+                # ファイルの更新日時を取得
+                model_mtime = os.path.getmtime(default_model_path)
+                model_date = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(model_mtime))
+                
+                st.session_state['model_info'] = {
+                    'path': default_model_path,
+                    'loaded_at': time.strftime('%Y-%m-%d %H:%M:%S'),
+                    'trained_at': model_date,
+                    'source': '自動読み込み（前回の学習結果）',
+                    'file_size': os.path.getsize(default_model_path)
+                }
+                st.session_state['auto_load_attempted'] = True
+            except Exception as e:
+                st.session_state['auto_load_error'] = str(e)
+                pass  # 読み込み失敗時は無視
+        
+        # 学習履歴の統計を取得
+        if history_exists:
+            try:
+                history = load_training_history()
+                st.session_state['history_stats'] = {
+                    'total_sessions': len(history),
+                    'last_trained': history[-1].get('timestamp', '不明') if history else '不明',
+                    'total_samples': sum(h.get('total_samples', 0) for h in history)
+                }
+            except:
+                pass
+    
+    # ============================================================
+    # �🔔 起動時の継続性通知（session_state初期化後に実行）
     # ============================================================
     if 'startup_notification_shown' not in st.session_state:
         st.session_state['startup_notification_shown'] = True
@@ -1827,57 +1878,6 @@ def app():
         st.info("💡 学習を開始すると、AIの成長状況がここに表示されます。下の「学習モード」でデータを学習させてください。")
     
     st.markdown("---")
-
-    # ============================================================
-    # 🔄 自動モデル読み込み機能 - アプリ起動時に実行
-    # ============================================================
-    if 'model_loaded' not in st.session_state:
-        st.session_state['model_loaded'] = False
-        st.session_state['persistent_model'] = None
-        st.session_state['model_info'] = None
-        st.session_state['auto_load_attempted'] = False
-        
-        # 保存されたモデルを探す
-        default_model_path = "trained_fd_model.pkl"
-        history_path = "training_history.json"
-        
-        # モデルファイルと学習履歴の存在確認
-        model_exists = os.path.exists(default_model_path)
-        history_exists = os.path.exists(history_path)
-        
-        if model_exists:
-            try:
-                model = load_model(default_model_path)
-                st.session_state['persistent_model'] = model
-                st.session_state['model_loaded'] = True
-                
-                # ファイルの更新日時を取得
-                model_mtime = os.path.getmtime(default_model_path)
-                model_date = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(model_mtime))
-                
-                st.session_state['model_info'] = {
-                    'path': default_model_path,
-                    'loaded_at': time.strftime('%Y-%m-%d %H:%M:%S'),
-                    'trained_at': model_date,
-                    'source': '自動読み込み（前回の学習結果）',
-                    'file_size': os.path.getsize(default_model_path)
-                }
-                st.session_state['auto_load_attempted'] = True
-            except Exception as e:
-                st.session_state['auto_load_error'] = str(e)
-                pass  # 読み込み失敗時は無視
-        
-        # 学習履歴の統計を取得
-        if history_exists:
-            try:
-                history = load_training_history()
-                st.session_state['history_stats'] = {
-                    'total_sessions': len(history),
-                    'last_trained': history[-1].get('timestamp', '不明') if history else '不明',
-                    'total_samples': sum(h.get('total_samples', 0) for h in history)
-                }
-            except:
-                pass
 
     gpu_auto = USE_CUPY
     st.sidebar.header("設定")
