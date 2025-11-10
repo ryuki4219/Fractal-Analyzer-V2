@@ -20,6 +20,14 @@ import pickle
 import json
 import re
 
+# 肌品質評価モジュールをインポート
+try:
+    from skin_quality_evaluator import SkinQualityEvaluator
+    SKIN_EVALUATOR_AVAILABLE = True
+except ImportError:
+    SKIN_EVALUATOR_AVAILABLE = False
+    print("Warning: skin_quality_evaluator.py not found. Skin quality evaluation will be disabled.")
+
 # Try import cupy for GPU acceleration (optional)
 USE_CUPY = False
 xp = np  # alias for numpy/cupy
@@ -2210,22 +2218,54 @@ def app():
     if app_mode == "🔮 推論モード (低画質画像のみで予測)":
         st.header("🔮 推論モード - 低画質画像だけで高品質FDを予測")
         
-        st.markdown("""
-        ### このモードについて
+        # サブモード選択を追加
+        st.markdown("### モード選択")
+        inference_submode = st.radio(
+            "実行モード",
+            ["🔮 通常予測モード", "🎯 精度検証モード (高画質ペアで検証)"],
+            help="通常予測: 低画質画像のみで予測\n精度検証: 高画質ペアと比較して予測精度を確認"
+        )
         
-        **学習済みモデルを使って、低画質の肌画像だけから高品質相当のフラクタル次元を予測します。**
+        st.markdown("---")
         
-        #### 📋 使い方
-        1. まず「学習モード」で画像ペアを使ってAIを学習
-        2. モデルを保存
-        3. このモードで低画質画像だけをアップロード
-        4. **AIが自動的に高品質相当のFDを予測**
-        
-        #### ✨ メリット
-        - 低画質画像だけでOK (高画質画像不要)
-        - 高速処理
-        - 学習済みモデルは再利用可能
-        """)
+        if inference_submode == "🔮 通常予測モード":
+            st.markdown("""
+            ### このモードについて
+            
+            **学習済みモデルを使って、低画質の肌画像だけから高品質相当のフラクタル次元を予測します。**
+            
+            #### 📋 使い方
+            1. まず「学習モード」で画像ペアを使ってAIを学習
+            2. モデルを保存
+            3. このモードで低画質画像だけをアップロード
+            4. **AIが自動的に高品質相当のFDを予測**
+            
+            #### ✨ メリット
+            - 低画質画像だけでOK (高画質画像不要)
+            - 高速処理
+            - 学習済みモデルは再利用可能
+            """)
+        else:
+            st.markdown("""
+            ### 🎯 精度検証モードについて
+            
+            **高画質・低画質のペア画像を使って、AIの予測精度を詳しく検証できます。**
+            
+            #### 📋 使い方
+            1. 高画質画像と低画質画像をペアでアップロード
+            2. AIが低画質から高品質FDを予測
+            3. 実際の高画質画像のFDと比較
+            4. **予測精度を定量的に評価**
+            
+            #### ✨ できること
+            - 予測値 vs 実測値の比較
+            - 誤差の統計分析
+            - 相関係数・MAE・RMSE の計算
+            - 散布図・誤差分布の可視化
+            - 画像ごとの詳細な精度確認
+            
+            💡 **モデルの性能を客観的に評価し、改善点を見つけられます**
+            """)
         
         # モデルの読み込み
         st.subheader("📂 モデルの読み込み")
@@ -2283,180 +2323,810 @@ def app():
                     st.error(f"❌ モデルの読み込みに失敗: {e}")
         
         if model is not None:
-            # 低画質画像のアップロード
-            st.subheader("📤 低画質画像をアップロード")
-            
-            st.success("🤖 モデルが読み込まれています。予測の準備完了!")
-            
-            low_quality_imgs = st.file_uploader(
-                "低画質の肌画像",
-                type=['png', 'jpg', 'jpeg'],
-                accept_multiple_files=True,
-                help="フラクタル次元を予測したい低画質画像",
-                key="inference_image_uploader"
-            )
-            
-            if low_quality_imgs:
-                st.success(f"✅ {len(low_quality_imgs)}枚の画像を読み込みました")
+            # ========================================
+            # 🔮 通常予測モード
+            # ========================================
+            if inference_submode == "🔮 通常予測モード":
+                # 低画質画像のアップロード
+                st.subheader("📤 低画質画像をアップロード")
                 
-                # 予測実行ボタン
-                if st.button("🔮 フラクタル次元を予測"):
-                    st.info("予測を開始します...")
+                st.success("🤖 モデルが読み込まれています。予測の準備完了!")
+                
+                low_quality_imgs = st.file_uploader(
+                    "低画質の肌画像",
+                    type=['png', 'jpg', 'jpeg'],
+                    accept_multiple_files=True,
+                    help="フラクタル次元を予測したい低画質画像",
+                    key="inference_image_uploader"
+                )
+                
+                if low_quality_imgs:
+                    st.success(f"✅ {len(low_quality_imgs)}枚の画像を読み込みました")
                     
-                    results = []
-                    progress_bar = st.progress(0)
-                    
-                    for idx, img_file in enumerate(low_quality_imgs):
-                        # 画像読み込み
-                        img = read_bgr_from_buffer(img_file.read())
+                    # 予測実行ボタン
+                    if st.button("🔮 フラクタル次元を予測"):
+                        st.info("予測を開始します...")
                         
-                        if img is not None:
-                            # 予測
-                            predicted_fd = predict_fd_from_low_quality(img, model)
-                            
-                            # 信頼度計算
-                            confidence_info = calculate_prediction_confidence(img, model, predicted_fd)
-                            
-                            results.append({
-                                'filename': img_file.name,
-                                'predicted_fd': predicted_fd,
-                                'image': img,
-                                'confidence': confidence_info
-                            })
+                        results = []
+                        progress_bar = st.progress(0)
                         
-                        progress_bar.progress((idx + 1) / len(low_quality_imgs))
-                    
-                    st.success("✅ 予測完了!")
-                    
-                    # 結果表示
-                    st.subheader("📊 予測結果と信頼度")
-                    
-                    st.markdown("""
-                    **予測されたフラクタル次元と信頼度:**
-                    - **予測FD**: AIが推定した高画質相当のフラクタル次元
-                    - **信頼度**: 予測値の信頼性 (0-100%)
-                    - **予測区間**: 予測値の推定範囲
-                    
-                    💡 **信頼度が高いほど、予測値の精度が高いと期待できます**
-                    """)
-                    
-                    # 結果テーブル (信頼度付き)
-                    import pandas as pd
-                    df = pd.DataFrame({
-                        "No.": range(1, len(results) + 1),
-                        "画像名": [r['filename'] for r in results],
-                        "予測FD": [f"{r['predicted_fd']:.4f}" for r in results],
-                        "信頼度": [f"{r['confidence']['overall_confidence']:.1f}%" for r in results],
-                        "信頼度レベル": [f"{r['confidence']['level_emoji']} {r['confidence']['confidence_level']}" for r in results],
-                        "予測区間": [f"{r['confidence']['lower_bound']:.4f} - {r['confidence']['upper_bound']:.4f}" for r in results]
-                    })
-                    
-                    st.dataframe(df, use_container_width=True, hide_index=True)
-                    
-                    # 統計情報
-                    predicted_fds = [r['predicted_fd'] for r in results]
-                    avg_confidence = np.mean([r['confidence']['overall_confidence'] for r in results])
-                    
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.info(f"""
-                        **予測値の統計:**
-                        - 平均FD: {np.mean(predicted_fds):.4f}
-                        - 標準偏差: {np.std(predicted_fds):.4f}
-                        - 最小値: {np.min(predicted_fds):.4f}
-                        - 最大値: {np.max(predicted_fds):.4f}
-                        """)
-                    
-                    with col2:
-                        st.info(f"""
-                        **信頼度の統計:**
-                        - 平均信頼度: {avg_confidence:.1f}%
-                        - 高信頼度(≥80%): {sum(1 for r in results if r['confidence']['overall_confidence'] >= 80)}枚
-                        - 中信頼度(60-80%): {sum(1 for r in results if 60 <= r['confidence']['overall_confidence'] < 80)}枚
-                        - 低信頼度(<60%): {sum(1 for r in results if r['confidence']['overall_confidence'] < 60)}枚
-                        """)
-                    
-                    # 詳細な信頼度情報 (展開可能)
-                    with st.expander("🔍 信頼度の詳細情報"):
+                        for idx, img_file in enumerate(low_quality_imgs):
+                            # 画像読み込み
+                            img = read_bgr_from_buffer(img_file.read())
+                            
+                            if img is not None:
+                                # 予測
+                                predicted_fd = predict_fd_from_low_quality(img, model)
+                                
+                                # 信頼度計算
+                                confidence_info = calculate_prediction_confidence(img, model, predicted_fd)
+                                
+                                results.append({
+                                    'filename': img_file.name,
+                                    'predicted_fd': predicted_fd,
+                                    'image': img,
+                                    'confidence': confidence_info
+                                })
+                            progress_bar.progress((idx + 1) / len(low_quality_imgs))
+                        
+                        st.success("✅ 予測完了!")
+                        
+                        # 結果表示
+                        st.subheader("📊 予測結果と信頼度")
+                        
                         st.markdown("""
-                        ### 信頼度の計算方法
+                        **予測されたフラクタル次元と信頼度:**
+                        - **予測FD**: AIが推定した高画質相当のフラクタル次元
+                        - **信頼度**: 予測値の信頼性 (0-100%)
+                        - **予測区間**: 予測値の推定範囲
                         
-                        **総合信頼度**は以下の2つの要素から計算されます:
-                        
-                        1. **特徴量品質スコア (60%の重み)**
-                           - エッジ強度: 画像の構造が明確か
-                           - ノイズレベル: ノイズが少ないか
-                           - エントロピー: 情報量が適切か
-                        
-                        2. **モデル信頼度 (40%の重み)**
-                           - 範囲妥当性: 予測値が正常範囲内か (2.0-3.0)
-                           - 予測安定性: 予測値が極端でないか
-                        
-                        **信頼度レベル:**
-                        - 🟢 非常に高い (80%以上): 予測値は非常に信頼できる
-                        - 🔵 高い (60-80%): 予測値は信頼できる
-                        - 🟡 中程度 (40-60%): 予測値は参考程度
-                        - 🔴 低い (40%未満): 予測値は慎重に扱うべき
+                        💡 **信頼度が高いほど、予測値の精度が高いと期待できます**
                         """)
                         
-                        # 各画像の詳細
-                        for idx, result in enumerate(results):
-                            conf = result['confidence']
-                            st.markdown(f"---")
-                            st.markdown(f"### {idx+1}. {result['filename']}")
-                            
-                            col1, col2, col3 = st.columns(3)
-                            with col1:
-                                st.metric(
-                                    "総合信頼度",
-                                    f"{conf['overall_confidence']:.1f}%",
-                                    delta=None
-                                )
-                            with col2:
-                                st.metric(
-                                    "特徴量品質",
-                                    f"{conf['feature_quality']:.1f}%"
-                                )
-                            with col3:
-                                st.metric(
-                                    "モデル信頼度",
-                                    f"{conf['model_confidence']:.1f}%"
-                                )
-                            
-                            # 特徴量の詳細
-                            feat_details = conf['feature_details']
-                            st.write(f"""
-                            **特徴量の詳細:**
-                            - エッジ強度: {feat_details['edge_strength']:.2f} (スコア: {feat_details['edge_score']:.1f}/40)
-                            - ノイズレベル: {feat_details['noise_level']:.2f} (スコア: {feat_details['noise_score']:.1f}/30)
-                            - エントロピー: {feat_details['entropy']:.2f} (スコア: {feat_details['entropy_score']:.1f}/30)
+                        # 結果テーブル (信頼度付き)
+                        import pandas as pd
+                        df = pd.DataFrame({
+                            "No.": range(1, len(results) + 1),
+                            "画像名": [r['filename'] for r in results],
+                            "予測FD": [f"{r['predicted_fd']:.4f}" for r in results],
+                            "信頼度": [f"{r['confidence']['overall_confidence']:.1f}%" for r in results],
+                            "信頼度レベル": [f"{r['confidence']['level_emoji']} {r['confidence']['confidence_level']}" for r in results],
+                            "予測区間": [f"{r['confidence']['lower_bound']:.4f} - {r['confidence']['upper_bound']:.4f}" for r in results]
+                        })
+                        
+                        st.dataframe(df, use_container_width=True, hide_index=True)
+                        
+                        # 統計情報
+                        predicted_fds = [r['predicted_fd'] for r in results]
+                        avg_confidence = np.mean([r['confidence']['overall_confidence'] for r in results])
+                        
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.info(f"""
+                            **予測値の統計:**
+                            - 平均FD: {np.mean(predicted_fds):.4f}
+                            - 標準偏差: {np.std(predicted_fds):.4f}
+                            - 最小値: {np.min(predicted_fds):.4f}
+                            - 最大値: {np.max(predicted_fds):.4f}
                             """)
-                    
-                    # 画像プレビュー (信頼度付き)
-                    st.subheader("📷 画像プレビュー (上位3枚)")
-                    cols = st.columns(min(3, len(results)))
-                    for idx, result in enumerate(results[:3]):
-                        with cols[idx]:
-                            conf = result['confidence']
-                            st.image(
-                                cv2.cvtColor(result['image'], cv2.COLOR_BGR2RGB),
-                                caption=f"{result['filename']}",
-                                use_container_width=True
+                        
+                        with col2:
+                            st.info(f"""
+                            **信頼度の統計:**
+                            - 平均信頼度: {avg_confidence:.1f}%
+                            - 高信頼度(≥80%): {sum(1 for r in results if r['confidence']['overall_confidence'] >= 80)}枚
+                            - 中信頼度(60-80%): {sum(1 for r in results if 60 <= r['confidence']['overall_confidence'] < 80)}枚
+                            - 低信頼度(<60%): {sum(1 for r in results if r['confidence']['overall_confidence'] < 60)}枚
+                            """)
+                        
+                        # 詳細な信頼度情報 (展開可能)
+                        with st.expander("🔍 信頼度の詳細情報"):
+                            st.markdown("""
+                            ### 信頼度の計算方法
+                            
+                            **総合信頼度**は以下の2つの要素から計算されます:
+                            
+                            1. **特徴量品質スコア (60%の重み)**
+                               - エッジ強度: 画像の構造が明確か
+                               - ノイズレベル: ノイズが少ないか
+                               - エントロピー: 情報量が適切か
+                            
+                            2. **モデル信頼度 (40%の重み)**
+                               - 範囲妥当性: 予測値が正常範囲内か (2.0-3.0)
+                               - 予測安定性: 予測値が極端でないか
+                            
+                            **信頼度レベル:**
+                            - 🟢 非常に高い (80%以上): 予測値は非常に信頼できる
+                            - 🔵 高い (60-80%): 予測値は信頼できる
+                            - 🟡 中程度 (40-60%): 予測値は参考程度
+                            - 🔴 低い (40%未満): 予測値は慎重に扱うべき
+                            """)
+                            
+                            # 各画像の詳細
+                            for idx, result in enumerate(results):
+                                conf = result['confidence']
+                                st.markdown(f"---")
+                                st.markdown(f"### {idx+1}. {result['filename']}")
+                                
+                                col1, col2, col3 = st.columns(3)
+                                with col1:
+                                    st.metric(
+                                        "総合信頼度",
+                                        f"{conf['overall_confidence']:.1f}%",
+                                        delta=None
+                                    )
+                                with col2:
+                                    st.metric(
+                                        "特徴量品質",
+                                        f"{conf['feature_quality']:.1f}%"
+                                    )
+                                with col3:
+                                    st.metric(
+                                        "モデル信頼度",
+                                        f"{conf['model_confidence']:.1f}%"
+                                    )
+                                
+                                # 特徴量の詳細
+                                feat_details = conf['feature_details']
+                                st.write(f"""
+                                **特徴量の詳細:**
+                                - エッジ強度: {feat_details['edge_strength']:.2f} (スコア: {feat_details['edge_score']:.1f}/40)
+                                - ノイズレベル: {feat_details['noise_level']:.2f} (スコア: {feat_details['noise_score']:.1f}/30)
+                                - エントロピー: {feat_details['entropy']:.2f} (スコア: {feat_details['entropy_score']:.1f}/30)
+                                """)
+                        
+                        # 画像プレビュー (信頼度付き)
+                        st.subheader("📷 画像プレビュー (上位3枚)")
+                        cols = st.columns(min(3, len(results)))
+                        for idx, result in enumerate(results[:3]):
+                            with cols[idx]:
+                                conf = result['confidence']
+                                st.image(
+                                    cv2.cvtColor(result['image'], cv2.COLOR_BGR2RGB),
+                                    caption=f"{result['filename']}",
+                                    use_container_width=True
+                                )
+                                st.markdown(f"""
+                                **FD:** {result['predicted_fd']:.4f}  
+                                **信頼度:** {conf['level_emoji']} {conf['overall_confidence']:.1f}%  
+                                **区間:** {conf['lower_bound']:.4f} - {conf['upper_bound']:.4f}
+                                """)
+                        
+                        # CSV出力 (信頼度情報含む)
+                        csv = df.to_csv(index=False).encode('utf-8-sig')
+                        st.download_button(
+                            label="📥 結果をCSVでダウンロード (信頼度含む)",
+                            data=csv,
+                            file_name="predicted_fractal_dimensions_with_confidence.csv",
+                            mime="text/csv"
+                        )
+                        
+                        # ============================================================
+                        # 🌸 肌品質評価セクション
+                        # ============================================================
+                        if SKIN_EVALUATOR_AVAILABLE:
+                            st.markdown("---")
+                            st.subheader("🌸 肌品質評価 (フラクタル次元分析)")
+                            
+                            st.info("""
+                            💡 **フラクタル次元と肌の関係**
+                            
+                            - **低いFD値 (2.0-2.4)**: きめ細かく、スムーズな肌
+                            - **中程度のFD値 (2.4-2.6)**: 普通の肌質
+                            - **高いFD値 (2.6-3.0)**: 粗い肌、毛穴やシワが目立つ
+                            
+                            このAIは低画質画像から高画質相当のFD値を予測し、正確な肌評価を可能にします。
+                            """)
+                            
+                            # 評価モード選択
+                            eval_mode = st.radio(
+                                "評価モード",
+                                ["総合評価", "個別評価", "年齢層比較"],
+                                horizontal=True
                             )
-                            st.markdown(f"""
-                            **FD:** {result['predicted_fd']:.4f}  
-                            **信頼度:** {conf['level_emoji']} {conf['overall_confidence']:.1f}%  
-                            **区間:** {conf['lower_bound']:.4f} - {conf['upper_bound']:.4f}
-                            """)
-                    
-                    # CSV出力 (信頼度情報含む)
-                    csv = df.to_csv(index=False).encode('utf-8-sig')
-                    st.download_button(
-                        label="📥 結果をCSVでダウンロード (信頼度含む)",
-                        data=csv,
-                        file_name="predicted_fractal_dimensions_with_confidence.csv",
-                        mime="text/csv"
+                            
+                            evaluator = SkinQualityEvaluator()
+                            
+                            if eval_mode == "総合評価":
+                                # 全画像の総合評価
+                                fd_values = [r['predicted_fd'] for r in results]
+                                labels = [r['filename'] for r in results]
+                                
+                                multi_eval = evaluator.evaluate_multiple(fd_values, labels)
+                                
+                                if multi_eval:
+                                    st.markdown("### 📊 総合評価結果")
+                                    
+                                    col1, col2, col3 = st.columns(3)
+                                    with col1:
+                                        st.metric(
+                                            "総合評価",
+                                            f"{multi_eval['overall']['grade_emoji']} {multi_eval['overall']['grade']}",
+                                            delta=f"スコア: {multi_eval['overall']['score']:.1f}/100"
+                                        )
+                                    with col2:
+                                        st.metric(
+                                        "平均FD値",
+                                        f"{multi_eval['statistics']['mean']:.4f}",
+                                        delta=f"標準偏差: {multi_eval['statistics']['std']:.4f}"
+                                    )
+                                with col3:
+                                    st.metric(
+                                        "一貫性",
+                                        multi_eval['consistency']['level'],
+                                        delta=multi_eval['consistency']['message']
+                                    )
+                                
+                                # 解釈とアドバイス
+                                st.markdown("#### 💭 解釈")
+                                st.info(multi_eval['overall']['interpretation'])
+                                
+                                st.markdown("#### 📝 改善提案")
+                                for rec in multi_eval['overall']['recommendations']:
+                                    st.write(rec)
+                                
+                                # 統計情報
+                                with st.expander("📈 詳細統計"):
+                                    stats = multi_eval['statistics']
+                                    st.write(f"**最小値:** {stats['min']:.4f}")
+                                    st.write(f"**最大値:** {stats['max']:.4f}")
+                                    st.write(f"**中央値:** {stats['median']:.4f}")
+                                    st.write(f"**範囲:** {stats['range']:.4f}")
+                        
+                        elif eval_mode == "個別評価":
+                            # 個別画像の詳細評価
+                            st.markdown("### 📋 個別画像評価")
+                            
+                            selected_idx = st.selectbox(
+                                "評価する画像を選択",
+                                range(len(results)),
+                                format_func=lambda i: results[i]['filename']
+                            )
+                            
+                            if selected_idx is not None:
+                                result = results[selected_idx]
+                                fd_value = result['predicted_fd']
+                                
+                                single_eval = evaluator.evaluate_single(fd_value)
+                                
+                                col1, col2 = st.columns([1, 2])
+                                
+                                with col1:
+                                    st.image(
+                                        cv2.cvtColor(result['image'], cv2.COLOR_BGR2RGB),
+                                        caption=result['filename'],
+                                        use_container_width=True
+                                    )
+                                
+                                with col2:
+                                    st.markdown(f"### {single_eval['grade_emoji']} {single_eval['grade']}")
+                                    st.metric("スコア", f"{single_eval['score']:.1f}/100")
+                                    st.metric("FD値", f"{fd_value:.4f}")
+                                    
+                                    st.markdown("#### 特徴分析")
+                                    features = single_eval['features']
+                                    st.write(f"- **スムーズさ:** {features['smoothness']}")
+                                    st.write(f"- **きめ細かさ:** {features['texture']}")
+                                    st.write(f"- **複雑度:** {features['complexity']}")
+                                
+                                st.markdown("#### 💭 解釈")
+                                st.info(single_eval['interpretation'])
+                                
+                                st.markdown("#### 📝 改善提案")
+                                for rec in single_eval['recommendations']:
+                                    st.write(rec)
+                        
+                        else:  # 年齢層比較
+                            st.markdown("### 👥 年齢層との比較")
+                            
+                            age_group = st.selectbox(
+                                "あなたの年齢層を選択",
+                                ['10-20', '20-30', '30-40', '40-50', '50+'],
+                                format_func=lambda x: f"{x}代" if x != '50+' else '50代以上'
+                            )
+                            
+                            # 平均FD値を使用
+                            fd_values = [r['predicted_fd'] for r in results]
+                            avg_fd = np.mean(fd_values)
+                            
+                            comparison = evaluator.compare_with_age_group(avg_fd, age_group)
+                            
+                            if 'error' not in comparison:
+                                col1, col2, col3 = st.columns(3)
+                                
+                                with col1:
+                                    st.metric(
+                                        "あなたのFD値",
+                                        f"{comparison['your_value']:.4f}"
+                                    )
+                                
+                                with col2:
+                                    st.metric(
+                                        "年齢層平均",
+                                        f"{comparison['age_average']:.4f}",
+                                        delta=f"差: {comparison['difference']:+.4f}"
+                                    )
+                                
+                                with col3:
+                                    st.metric(
+                                        "パーセンタイル",
+                                        f"{comparison['percentile']:.0f}%"
+                                    )
+                                
+                                st.markdown("#### 💭 比較結果")
+                                st.info(comparison['interpretation'])
+                                
+                                # Z-scoreの解説
+                                with st.expander("📊 統計的解釈"):
+                                    st.write(f"**Z-スコア:** {comparison['z_score']:.2f}")
+                                    st.write("Z-スコアの意味:")
+                                    st.write("- 0付近: 平均的")
+                                    st.write("- -1～-2: 平均より良好")
+                                    st.write("- -2以下: 非常に良好")
+                                    st.write("- +1～+2: 平均より高め")
+                                    st.write("- +2以上: 要改善")
+            
+            # ========================================
+            # 🎯 精度検証モード
+            # ========================================
+            else:  # inference_submode == "🎯 精度検証モード (高画質ペアで検証)"
+                st.subheader("📤 画像ペアをアップロード")
+                
+                st.success("🤖 モデルが読み込まれています。検証の準備完了!")
+                
+                st.markdown("""
+                **高画質画像と低画質画像をペアでアップロードしてください。**
+                - ファイル名が一致するものを自動でペアリングします
+                - 例: `IMG_001.jpg` (高画質) と `IMG_001_low4.jpg` (低画質)
+                """)
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    high_quality_imgs = st.file_uploader(
+                        "高画質画像",
+                        type=['png', 'jpg', 'jpeg'],
+                        accept_multiple_files=True,
+                        help="正解となる高画質の肌画像",
+                        key="validation_high_quality_uploader"
                     )
+                
+                with col2:
+                    low_quality_imgs_val = st.file_uploader(
+                        "低画質画像",
+                        type=['png', 'jpg', 'jpeg'],
+                        accept_multiple_files=True,
+                        help="AIで予測する低画質の肌画像",
+                        key="validation_low_quality_uploader"
+                    )
+                
+                if high_quality_imgs and low_quality_imgs_val:
+                    st.success(f"✅ 高画質: {len(high_quality_imgs)}枚, 低画質: {len(low_quality_imgs_val)}枚")
+                    
+                    # ペアリング処理
+                    st.subheader("🔗 ペアリング")
+                    
+                    def extract_base_name(filename):
+                        """ファイル名からベース名を抽出 (low1-10のサフィックスを除去)"""
+                        # 拡張子を除去
+                        name_without_ext = os.path.splitext(filename)[0]
+                        # _low1 から _low10 を除去
+                        base_name = re.sub(r'_low\d+$', '', name_without_ext)
+                        return base_name
+                    
+                    # ペア作成
+                    high_dict = {extract_base_name(f.name): f for f in high_quality_imgs}
+                    low_dict = {}
+                    
+                    for f in low_quality_imgs_val:
+                        base = extract_base_name(f.name)
+                        if base not in low_dict:
+                            low_dict[base] = []
+                        low_dict[base].append(f)
+                    
+                    # マッチング
+                    pairs = []
+                    for base_name in high_dict.keys():
+                        if base_name in low_dict:
+                            for low_file in low_dict[base_name]:
+                                pairs.append({
+                                    'base_name': base_name,
+                                    'high_file': high_dict[base_name],
+                                    'low_file': low_file
+                                })
+                    
+                    if pairs:
+                        st.success(f"✅ {len(pairs)}組のペアが見つかりました")
+                        
+                        # ペア一覧を表示
+                        with st.expander("📋 検出されたペア一覧"):
+                            import pandas as pd
+                            pair_df = pd.DataFrame({
+                                "No.": range(1, len(pairs) + 1),
+                                "ベース名": [p['base_name'] for p in pairs],
+                                "高画質画像": [p['high_file'].name for p in pairs],
+                                "低画質画像": [p['low_file'].name for p in pairs]
+                            })
+                            st.dataframe(pair_df, use_container_width=True, hide_index=True)
+                        
+                        # 検証実行ボタン
+                        if st.button("🎯 精度検証を実行", type="primary"):
+                            st.info("検証を開始します...")
+                            
+                            validation_results = []
+                            progress_bar = st.progress(0)
+                            
+                            # デバッグ情報表示
+                            debug_info = st.empty()
+                            
+                            for idx, pair in enumerate(pairs):
+                                debug_info.info(f"処理中: {idx+1}/{len(pairs)} - {pair['base_name']}")
+                                
+                                # 画像読み込み
+                                high_img = read_bgr_from_buffer(pair['high_file'].read())
+                                low_img = read_bgr_from_buffer(pair['low_file'].read())
+                                
+                                if high_img is not None and low_img is not None:
+                                    # 高画質画像の実際のFD計算（学習時と同じ方法を使用）
+                                    actual_fd, _, _ = fast_fractal_std_boxcount_batched(high_img, use_gpu=False)
+                                    if actual_fd is None:
+                                        # フォールバック: naiveメソッドを試す
+                                        actual_fd, _, _ = fractal_dimension_naive(high_img)
+                                    
+                                    debug_info.info(f"""
+                                    {pair['base_name']}:
+                                    - 高画質画像サイズ: {high_img.shape}
+                                    - 実測FD: {actual_fd}
+                                    """)
+                                    
+                                    if actual_fd is None:
+                                        st.warning(f"⚠️ {pair['base_name']}: FD計算失敗（スキップ）")
+                                        continue
+                                    
+                                    # 低画質画像からの予測FD
+                                    predicted_fd = predict_fd_from_low_quality(low_img, model)
+                                    
+                                    debug_info.info(f"""
+                                    {pair['base_name']}:
+                                    - 低画質画像サイズ: {low_img.shape}
+                                    - 予測FD: {predicted_fd}
+                                    """)
+                                    
+                                    # 誤差計算
+                                    error = predicted_fd - actual_fd
+                                    abs_error = abs(error)
+                                    relative_error = (abs_error / actual_fd) * 100 if actual_fd != 0 else 0
+                                    
+                                    validation_results.append({
+                                        'base_name': pair['base_name'],
+                                        'high_filename': pair['high_file'].name,
+                                        'low_filename': pair['low_file'].name,
+                                        'actual_fd': actual_fd,
+                                        'predicted_fd': predicted_fd,
+                                        'error': error,
+                                        'abs_error': abs_error,
+                                        'relative_error': relative_error,
+                                        'high_img': high_img,
+                                        'low_img': low_img
+                                    })
+                                else:
+                                    st.warning(f"⚠️ {pair['base_name']}: 画像読み込み失敗")
+                                
+                                progress_bar.progress((idx + 1) / len(pairs))
+                            
+                            debug_info.empty()  # デバッグ情報をクリア
+                            
+                            st.success(f"✅ 検証完了! {len(validation_results)}件のデータを取得")
+                            
+                            # データ数チェック
+                            if len(validation_results) == 0:
+                                st.error("❌ 有効なデータが取得できませんでした。画像ファイルを確認してください。")
+                            elif len(validation_results) == 1:
+                                st.warning("⚠️ データが1件のみです。統計分析には最低3件以上を推奨します。")
+                            
+                            # ========================================
+                            # 📊 精度検証結果の表示
+                            # ========================================
+                            st.subheader("📊 精度検証結果")
+                            
+                            if validation_results:
+                                # 統計指標の計算
+                                actual_fds = np.array([r['actual_fd'] for r in validation_results])
+                                predicted_fds = np.array([r['predicted_fd'] for r in validation_results])
+                                errors = np.array([r['error'] for r in validation_results])
+                                abs_errors = np.array([r['abs_error'] for r in validation_results])
+                                
+                                # データ数と変動チェック
+                                n_samples = len(validation_results)
+                                actual_std = np.std(actual_fds)
+                                predicted_std = np.std(predicted_fds)
+                                
+                                st.info(f"""
+                                **検証データ情報:**
+                                - データ数: {n_samples}件
+                                - 実測FDの変動: {actual_std:.4f}
+                                - 予測FDの変動: {predicted_std:.4f}
+                                """)
+                                
+                                # 相関係数（変動がない場合はnanになる）
+                                if actual_std > 0 and predicted_std > 0:
+                                    correlation = np.corrcoef(actual_fds, predicted_fds)[0, 1]
+                                else:
+                                    correlation = np.nan
+                                    st.warning("⚠️ データの変動がないため、相関係数を計算できません。異なる画像を使用してください。")
+                                
+                                # MAE (平均絶対誤差)
+                                mae = np.mean(abs_errors)
+                                
+                                # RMSE (二乗平均平方根誤差)
+                                rmse = np.sqrt(np.mean(errors ** 2))
+                                
+                                # R² (決定係数)
+                                ss_res = np.sum(errors ** 2)
+                                ss_tot = np.sum((actual_fds - np.mean(actual_fds)) ** 2)
+                                r2 = 1 - (ss_res / ss_tot) if ss_tot != 0 else 0
+                                
+                                # 総合評価
+                                st.markdown("### 🎯 総合評価")
+                                
+                                col1, col2, col3, col4 = st.columns(4)
+                                
+                                with col1:
+                                    # 相関係数の評価
+                                    if np.isnan(correlation):
+                                        corr_grade = "N/A"
+                                        corr_emoji = "💫"
+                                        corr_display = "nan"
+                                    elif correlation >= 0.95:
+                                        corr_grade = "S"
+                                        corr_emoji = "🌟"
+                                        corr_display = f"{correlation:.4f}"
+                                    elif correlation >= 0.90:
+                                        corr_grade = "A"
+                                        corr_emoji = "⭐"
+                                        corr_display = f"{correlation:.4f}"
+                                    elif correlation >= 0.85:
+                                        corr_grade = "B"
+                                        corr_emoji = "✨"
+                                        corr_display = f"{correlation:.4f}"
+                                    else:
+                                        corr_grade = "C"
+                                        corr_emoji = "💫"
+                                        corr_display = f"{correlation:.4f}"
+                                    
+                                    st.metric(
+                                        "相関係数",
+                                        corr_display,
+                                        delta=f"{corr_grade}評価 {corr_emoji}"
+                                    )
+                                
+                                with col2:
+                                    # MAEの評価
+                                    if mae <= 0.03:
+                                        mae_grade = "S"
+                                        mae_emoji = "🌟"
+                                    elif mae <= 0.05:
+                                        mae_grade = "A"
+                                        mae_emoji = "⭐"
+                                    elif mae <= 0.08:
+                                        mae_grade = "B"
+                                        mae_emoji = "✨"
+                                    else:
+                                        mae_grade = "C"
+                                        mae_emoji = "💫"
+                                    
+                                    st.metric(
+                                        "MAE (平均絶対誤差)",
+                                        f"{mae:.4f}",
+                                        delta=f"{mae_grade}評価 {mae_emoji}"
+                                    )
+                                
+                                with col3:
+                                    st.metric(
+                                        "RMSE",
+                                        f"{rmse:.4f}",
+                                        delta=f"±{rmse:.4f}"
+                                    )
+                                
+                                with col4:
+                                    # R²の評価
+                                    if r2 >= 0.90:
+                                        r2_emoji = "🌟"
+                                    elif r2 >= 0.80:
+                                        r2_emoji = "⭐"
+                                    elif r2 >= 0.70:
+                                        r2_emoji = "✨"
+                                    else:
+                                        r2_emoji = "💫"
+                                    
+                                    st.metric(
+                                        "R² (決定係数)",
+                                        f"{r2:.4f}",
+                                        delta=r2_emoji
+                                    )
+                                
+                                # 詳細統計
+                                st.markdown("### 📈 詳細統計")
+                                
+                                col1, col2 = st.columns(2)
+                                
+                                with col1:
+                                    st.info(f"""
+                                    **実測値 (高画質FD) の統計:**
+                                    - 平均: {np.mean(actual_fds):.4f}
+                                    - 標準偏差: {np.std(actual_fds):.4f}
+                                    - 最小値: {np.min(actual_fds):.4f}
+                                    - 最大値: {np.max(actual_fds):.4f}
+                                    - 範囲: {np.max(actual_fds) - np.min(actual_fds):.4f}
+                                    """)
+                                
+                                with col2:
+                                    st.info(f"""
+                                    **予測値 (AI予測FD) の統計:**
+                                    - 平均: {np.mean(predicted_fds):.4f}
+                                    - 標準偏差: {np.std(predicted_fds):.4f}
+                                    - 最小値: {np.min(predicted_fds):.4f}
+                                    - 最大値: {np.max(predicted_fds):.4f}
+                                    - 範囲: {np.max(predicted_fds) - np.min(predicted_fds):.4f}
+                                    """)
+                                
+                                st.warning(f"""
+                                **誤差の統計:**
+                                - 平均誤差 (Bias): {np.mean(errors):.4f}
+                                - MAE: {mae:.4f}
+                                - RMSE: {rmse:.4f}
+                                - 最大誤差: {np.max(abs_errors):.4f}
+                                - 誤差の標準偏差: {np.std(errors):.4f}
+                                """)
+                                
+                                # 可視化
+                                st.markdown("### 📊 可視化")
+                                
+                                import matplotlib.pyplot as plt
+                                
+                                fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+                                
+                                # 1. 散布図 (予測 vs 実測)
+                                axes[0].scatter(actual_fds, predicted_fds, alpha=0.6, s=100)
+                                axes[0].plot([actual_fds.min(), actual_fds.max()], 
+                                            [actual_fds.min(), actual_fds.max()], 
+                                            'r--', lw=2, label='理想線 (y=x)')
+                                axes[0].set_xlabel('実測FD (高画質)', fontsize=12)
+                                axes[0].set_ylabel('予測FD (AI)', fontsize=12)
+                                axes[0].set_title(f'予測 vs 実測\n相関係数: {correlation:.4f}', fontsize=14)
+                                axes[0].legend()
+                                axes[0].grid(True, alpha=0.3)
+                                
+                                # 2. 誤差分布 (ヒストグラム)
+                                axes[1].hist(errors, bins=20, edgecolor='black', alpha=0.7)
+                                axes[1].axvline(0, color='red', linestyle='--', linewidth=2, label='誤差ゼロ')
+                                axes[1].axvline(np.mean(errors), color='green', linestyle='--', 
+                                              linewidth=2, label=f'平均誤差: {np.mean(errors):.4f}')
+                                axes[1].set_xlabel('誤差 (予測 - 実測)', fontsize=12)
+                                axes[1].set_ylabel('頻度', fontsize=12)
+                                axes[1].set_title(f'誤差分布\nMAE: {mae:.4f}, RMSE: {rmse:.4f}', fontsize=14)
+                                axes[1].legend()
+                                axes[1].grid(True, alpha=0.3)
+                                
+                                # 3. 絶対誤差の分布
+                                axes[2].hist(abs_errors, bins=20, edgecolor='black', alpha=0.7, color='orange')
+                                axes[2].axvline(mae, color='red', linestyle='--', 
+                                              linewidth=2, label=f'MAE: {mae:.4f}')
+                                axes[2].set_xlabel('絶対誤差 |予測 - 実測|', fontsize=12)
+                                axes[2].set_ylabel('頻度', fontsize=12)
+                                axes[2].set_title('絶対誤差分布', fontsize=14)
+                                axes[2].legend()
+                                axes[2].grid(True, alpha=0.3)
+                                
+                                plt.tight_layout()
+                                st.pyplot(fig)
+                                
+                                # 結果テーブル
+                                st.markdown("### 📋 詳細結果テーブル")
+                                
+                                import pandas as pd
+                                result_df = pd.DataFrame({
+                                    "No.": range(1, len(validation_results) + 1),
+                                    "ベース名": [r['base_name'] for r in validation_results],
+                                    "実測FD": [f"{r['actual_fd']:.4f}" for r in validation_results],
+                                    "予測FD": [f"{r['predicted_fd']:.4f}" for r in validation_results],
+                                    "誤差": [f"{r['error']:+.4f}" for r in validation_results],
+                                    "絶対誤差": [f"{r['abs_error']:.4f}" for r in validation_results],
+                                    "相対誤差%": [f"{r['relative_error']:.2f}%" for r in validation_results]
+                                })
+                                
+                                st.dataframe(result_df, use_container_width=True, hide_index=True)
+                                
+                                # CSV ダウンロード
+                                csv = result_df.to_csv(index=False, encoding='utf-8-sig')
+                                st.download_button(
+                                    label="📥 結果をCSVでダウンロード",
+                                    data=csv,
+                                    file_name=f"validation_results_{time.strftime('%Y%m%d_%H%M%S')}.csv",
+                                    mime="text/csv"
+                                )
+                                
+                                # 画像ごとの詳細確認
+                                st.markdown("### 🖼️ 画像ごとの詳細確認")
+                                
+                                with st.expander("画像と誤差を表示"):
+                                    for i, result in enumerate(validation_results):
+                                        st.markdown(f"#### {i+1}. {result['base_name']}")
+                                        
+                                        col1, col2, col3 = st.columns([1, 1, 1])
+                                        
+                                        with col1:
+                                            st.image(cv2.cvtColor(result['high_img'], cv2.COLOR_BGR2RGB), 
+                                                    caption=f"高画質: {result['high_filename']}", 
+                                                    use_container_width=True)
+                                            st.write(f"**実測FD:** {result['actual_fd']:.4f}")
+                                        
+                                        with col2:
+                                            st.image(cv2.cvtColor(result['low_img'], cv2.COLOR_BGR2RGB), 
+                                                    caption=f"低画質: {result['low_filename']}", 
+                                                    use_container_width=True)
+                                            st.write(f"**予測FD:** {result['predicted_fd']:.4f}")
+                                        
+                                        with col3:
+                                            # 誤差評価
+                                            if result['abs_error'] <= 0.02:
+                                                error_level = "🌟 優秀"
+                                            elif result['abs_error'] <= 0.05:
+                                                error_level = "⭐ 良好"
+                                            elif result['abs_error'] <= 0.08:
+                                                error_level = "✨ 許容"
+                                            else:
+                                                error_level = "💫 要改善"
+                                            
+                                            st.metric("誤差", f"{result['error']:+.4f}", delta=error_level)
+                                            st.write(f"**絶対誤差:** {result['abs_error']:.4f}")
+                                            st.write(f"**相対誤差:** {result['relative_error']:.2f}%")
+                                        
+                                        st.markdown("---")
+                                
+                                # 評価コメント
+                                st.markdown("### 💬 評価コメント")
+                                
+                                if correlation >= 0.95 and mae <= 0.03:
+                                    st.success("""
+                                    🌟 **優秀な精度です！**
+                                    - 予測と実測の相関が非常に高く、MAEも小さいです
+                                    - このモデルは実用レベルで使用できます
+                                    - 肌品質評価に十分な精度を持っています
+                                    """)
+                                elif correlation >= 0.90 and mae <= 0.05:
+                                    st.info("""
+                                    ⭐ **良好な精度です！**
+                                    - 予測精度は実用的なレベルです
+                                    - より多くのデータやデータ拡張で改善の余地があります
+                                    """)
+                                elif correlation >= 0.85 and mae <= 0.08:
+                                    st.warning("""
+                                    ✨ **許容範囲の精度です**
+                                    - 基本的な予測は可能ですが、改善の余地があります
+                                    - データ数増加、データ拡張、品質レベルの見直しを検討してください
+                                    """)
+                                else:
+                                    st.error("""
+                                    💫 **精度改善が必要です**
+                                    - 予測精度が低い可能性があります
+                                    - 以下を確認してください:
+                                      1. 学習データ数は十分か (最低100組以上推奨)
+                                      2. データ拡張は適切か (15種類以上推奨)
+                                      3. 品質レベルの選択は適切か (low4-7推奨)
+                                      4. 画像の品質は適切か
+                                    """)
+                            
+                            else:
+                                st.error("検証結果が取得できませんでした")
+                    
+                    else:
+                        st.warning("⚠️ ペアが見つかりませんでした。ファイル名を確認してください。")
+                        st.info("""
+                        **ペアリングの条件:**
+                        - 高画質: `IMG_001.jpg`
+                        - 低画質: `IMG_001_low4.jpg` (ベース名が同じで、_low{数字}がつく)
+                        """)
         
         return  # 推論モードはここで終了
 
