@@ -2496,9 +2496,40 @@ GitHub: ryuki4219/Fractal-Analyzer-V2
 # Streamlit app
 # ============================================================
 def app():
-    st.set_page_config(layout="wide", page_title="高速フラクタル解析（GPU最適化版）")
-    st.title("🚀 高速フラクタル解析 + AI補正（GPU 最適化版）")
-    st.markdown("CuPy が利用可能な場合は GPU を自動で使います。無ければ CPU (NumPy) で処理します。")
+    st.set_page_config(layout="wide", page_title="Fractal Analyzer V2 - フラクタル次元解析")
+    st.title("� Fractal Analyzer V2 - フラクタル次元解析システム")
+    
+    # ============================================================
+    # ⚠️ 重要な注意事項・免責事項
+    # ============================================================
+    st.warning("""
+    ⚠️ **重要な注意事項**
+    
+    **本サービスは研究・教育目的のツールであり、医療診断を目的としたものではありません。**
+    
+    - 🔬 フラクタル幾何学の研究・学習用ツールです
+    - ❌ 医療診断・健康判定には使用しないでください
+    - ⚕️ 医療に関する判断は、必ず医療機関・医師にご相談ください
+    - 📊 解析結果は参考値としてご利用ください
+    
+    本サービスを利用することで、[利用規約](https://github.com/ryuki4219/Fractal-Analyzer-V2/blob/main/TERMS_OF_SERVICE.md)に同意したものとみなされます。
+    """)
+    
+    # ドキュメントへのリンク
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.markdown("📖 [使い方ガイド](https://github.com/ryuki4219/Fractal-Analyzer-V2/blob/main/USER_GUIDE.md)")
+    with col2:
+        st.markdown("📜 [利用規約](https://github.com/ryuki4219/Fractal-Analyzer-V2/blob/main/TERMS_OF_SERVICE.md)")
+    with col3:
+        st.markdown("🔒 [プライバシーポリシー](https://github.com/ryuki4219/Fractal-Analyzer-V2/blob/main/PRIVACY_POLICY.md)")
+    with col4:
+        st.markdown("💻 [GitHubリポジトリ](https://github.com/ryuki4219/Fractal-Analyzer-V2)")
+    
+    st.markdown("---")
+    
+    # システム情報
+    st.markdown("**システム情報:** CuPy が利用可能な場合は GPU を自動で使います。無ければ CPU (NumPy) で処理します。")
     
     # ============================================================
     # � 自動モデル読み込み機能 - アプリ起動時に実行（最初に実行）
