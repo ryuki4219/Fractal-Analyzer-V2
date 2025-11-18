@@ -34,35 +34,35 @@ class SkinQualityEvaluator:
         # グレード基準（S/A/B/C/Dシステム）
         self.grade_criteria = {
             'S': {
-                'range': (2.80, 3.00),
+                'range': (2.90, 3.00),
                 'description': '非常に滑らか',
                 'icon': '🌟',
-                'interpretation': 'きめ細かく、非常に滑らかな肌質です。フラクタル構造が複雑で理想的な状態です。',
+                'interpretation': 'きめ細かく、非常に滑らかな肌質です。フラクタル構造が非常に複雑で理想的な状態です。',
                 'recommendation': '現在のスキンケアを継続し、紫外線対策を怠らないようにしましょう。'
             },
             'A': {
-                'range': (2.70, 2.80),
+                'range': (2.80, 2.90),
                 'description': '滑らか',
                 'icon': '✨',
-                'interpretation': 'きめ細かく滑らかな肌質です。良好な状態を維持しています。',
+                'interpretation': 'きめ細かく滑らかな肌質です。構造が複雑で良好な状態を維持しています。',
                 'recommendation': '現状維持を心がけ、保湿と紫外線対策を継続しましょう。'
             },
             'B': {
-                'range': (2.60, 2.70),
+                'range': (2.50, 2.80),
                 'description': '普通',
                 'icon': '👍',
-                'interpretation': '一般的な肌質です。さらなる改善の余地があります。',
+                'interpretation': '一般的な肌質です。構造は中程度の複雑さです。さらなる改善の余地があります。',
                 'recommendation': '保湿ケアを強化し、規則正しい生活習慣を心がけましょう。'
             },
             'C': {
-                'range': (2.50, 2.60),
+                'range': (2.40, 2.50),
                 'description': 'やや粗い',
                 'icon': '💧',
-                'interpretation': 'やや粗めの肌質です。スキンケアで改善が期待できます。',
+                'interpretation': 'やや粗めの肌質です。構造がやや単純化しています。スキンケアで改善が期待できます。',
                 'recommendation': '集中保湿ケア、ビタミンC誘導体配合化粧品の使用をお勧めします。'
             },
             'D': {
-                'range': (0.0, 2.50),
+                'range': (0.0, 2.40),
                 'description': '粗い',
                 'icon': '⚠️',
                 'interpretation': '肌のフラクタル構造が単純化しています。積極的なケアが必要です。',
@@ -84,19 +84,26 @@ class SkinQualityEvaluator:
         """
         FD値からグレード(S/A/B/C/D)を取得
         
+        新基準:
+        - S (Superior): FD ≥ 2.90 - 非常に滑らか（フラクタル構造が非常に複雑）
+        - A (Excellent): 2.80 ≤ FD < 2.90 - 滑らか（構造が複雑）
+        - B (Good): 2.50 ≤ FD < 2.80 - 普通（構造は中程度）
+        - C (Fair): 2.40 ≤ FD < 2.50 - やや粗い（構造がやや単純）
+        - D (Poor): FD < 2.40 - 粗い（構造が単純）
+        
         Args:
             fd_value: フラクタル次元値
             
         Returns:
             グレード文字列
         """
-        if fd_value >= 2.80:
+        if fd_value >= 2.90:
             return 'S'
-        elif fd_value >= 2.70:
+        elif fd_value >= 2.80:
             return 'A'
-        elif fd_value >= 2.60:
-            return 'B'
         elif fd_value >= 2.50:
+            return 'B'
+        elif fd_value >= 2.40:
             return 'C'
         else:
             return 'D'
@@ -228,11 +235,12 @@ class SkinQualityEvaluator:
         """
         肌の特徴分析（中川氏の研究に基づいて修正）
         FD値が高い = フラクタル構造が複雑 = きめ細かく滑らか
+        新基準に合わせて更新
         """
         features = {
-            'smoothness': 'とてもスムーズ' if fd_value >= 2.75 else 'スムーズ' if fd_value >= 2.60 else '普通' if fd_value >= 2.50 else 'やや粗い',
-            'texture': 'きめ細かい' if fd_value >= 2.75 else 'やや細かい' if fd_value >= 2.60 else '普通' if fd_value >= 2.50 else 'やや粗い',
-            'complexity': '高（理想的）' if fd_value >= 2.70 else '中' if fd_value >= 2.50 else '低（要ケア）'
+            'smoothness': 'とてもスムーズ' if fd_value >= 2.85 else 'スムーズ' if fd_value >= 2.65 else '普通' if fd_value >= 2.45 else 'やや粗い',
+            'texture': 'きめ細かい' if fd_value >= 2.85 else 'やや細かい' if fd_value >= 2.65 else '普通' if fd_value >= 2.45 else 'やや粗い',
+            'complexity': '高（理想的）' if fd_value >= 2.80 else '中' if fd_value >= 2.50 else '低（要ケア）'
         }
         return features
     
@@ -242,22 +250,22 @@ class SkinQualityEvaluator:
         return self.grade_criteria[grade]['interpretation']
     
     def _get_recommendations(self, fd_value: float) -> List[str]:
-        """改善提案（中川氏の研究に基づいて修正）"""
+        """改善提案（新基準に基づいて修正）"""
         recommendations = []
         
-        if fd_value >= 2.75:  # S, A グレード
+        if fd_value >= 2.80:  # S, A グレード
             recommendations = [
                 "✅ 現在のスキンケアを継続",
                 "✅ 紫外線対策を怠らない",
                 "✅ 十分な睡眠と水分補給"
             ]
-        elif fd_value >= 2.60:  # B グレード
+        elif fd_value >= 2.50:  # B グレード
             recommendations = [
                 "💧 保湿ケアを強化",
                 "🌞 紫外線対策を徹底",
                 "😴 規則正しい生活習慣"
             ]
-        elif fd_value >= 2.50:  # C グレード
+        elif fd_value >= 2.40:  # C グレード
             recommendations = [
                 "💧 集中保湿ケアが必要",
                 "🧴 ビタミンC誘導体配合化粧品の使用",
