@@ -25,8 +25,9 @@ def get_face_mesh():
             _face_mesh = mp_face_mesh.FaceMesh(
                 static_image_mode=True,
                 max_num_faces=1,
-                min_detection_confidence=0.5,
-                min_tracking_confidence=0.5
+                refine_landmarks=True,
+                min_detection_confidence=0.3,  # 信頼度を下げて検出しやすく
+                min_tracking_confidence=0.3
             )
         except ImportError:
             return None
@@ -47,8 +48,33 @@ def detect_face_landmarks(image):
     if face_mesh is None:
         return None
     
+    # 画像サイズの確認と調整
+    h, w = image.shape[:2]
+    
+    # 画像が小さすぎる場合はリサイズ
+    if w < 640 or h < 480:
+        scale = max(640 / w, 480 / h)
+        new_w = int(w * scale)
+        new_h = int(h * scale)
+        image = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
+    
+    # 画像が大きすぎる場合もリサイズ（処理速度向上）
+    elif w > 1920 or h > 1080:
+        scale = min(1920 / w, 1080 / h)
+        new_w = int(w * scale)
+        new_h = int(h * scale)
+        image = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_AREA)
+    
     # BGR→RGB変換
     rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    
+    # コントラスト調整（顔検出を改善）
+    lab = cv2.cvtColor(rgb_image, cv2.COLOR_RGB2LAB)
+    l, a, b = cv2.split(lab)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    l = clahe.apply(l)
+    enhanced = cv2.merge([l, a, b])
+    rgb_image = cv2.cvtColor(enhanced, cv2.COLOR_LAB2RGB)
     
     # 顔検出
     results = face_mesh.process(rgb_image)
