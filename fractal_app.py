@@ -5979,9 +5979,6 @@ def app():
                     st.write(f"**最小:** {np.min(valid_pred):.4f}")
                     st.write(f"**最大:** {np.max(valid_pred):.4f}")
 
-    else:
-        st.info("📁 フォルダモード: フォルダパスを入力すると自動的に画像ペアを検出します\n📤 手動モード: 高画質と低画質のペア画像を同数アップロードしてください")
-
     # ============================================================
     # 🌸 顔全体分析モード
     # ============================================================
@@ -6252,6 +6249,502 @@ def app():
                     file_name=report_filename,
                     mime="text/markdown"
                 )
+    
+    # ============================================================
+    # 🔬 実験データ収集モード
+    # ============================================================
+    elif app_mode == "🔬 実験データ収集":
+        st.header("🔬 実験データ収集 - 肌状態とフラクタル次元の相関研究")
+        
+        if not EXPERIMENT_ANALYSIS_AVAILABLE:
+            st.error("""
+            ❌ **実験データ収集機能が利用できません**
+            
+            `experiment_analysis.py`モジュールが見つかりません。
+            """)
+            return
+        
+        st.markdown("""
+        ### 🎯 研究目的
+        フラクタル次元と肌の物理的状態（乾燥、荒れ、水分量など）の定量的関係を明らかにする
+        
+        **測定項目:**
+        - フラクタル次元（客観的指標）
+        - 肌状態の主観評価（肌荒れ度、乾燥度）
+        - 客観的測定値（水分量、皮脂量など）
+        - 環境条件（温度、湿度）
+        
+        **データの使い道:**
+        - 相関分析（FDと肌状態の関係）
+        - 論文・レポート作成
+        - AI予測モデルの改善
+        """)
+        
+        # データマネージャー初期化
+        data_manager = ExperimentDataManager()
+        
+        # タブで分割
+        data_tab, history_tab = st.tabs(["📝 新規データ収集", "📚 履歴表示"])
+        
+        with data_tab:
+            st.subheader("📋 被験者情報")
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                subject_id = st.text_input("被験者ID", placeholder="例: S001", help="一意のIDを設定")
+                age = st.number_input("年齢", min_value=10, max_value=100, value=25)
+                gender = st.selectbox("性別", ["女性", "男性", "その他"])
+            
+            with col2:
+                skin_type = st.selectbox("肌質", [
+                    "普通肌", "乾燥肌", "脂性肌", "混合肌", "敏感肌"
+                ])
+                measurement_date = st.date_input("測定日")
+                measurement_time = st.time_input("測定時刻")
+            
+            st.markdown("---")
+            st.subheader("🌡️ 測定条件")
+            
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                condition = st.selectbox("肌状態", [
+                    "通常状態",
+                    "洗顔直後（30分以内）",
+                    "保湿クリーム塗布後",
+                    "運動後",
+                    "睡眠不足後",
+                    "その他"
+                ])
+            with col2:
+                temperature = st.number_input("室温 (°C)", min_value=10.0, max_value=40.0, value=22.0, step=0.5)
+            with col3:
+                humidity = st.number_input("湿度 (%)", min_value=0, max_value=100, value=50)
+            
+            st.markdown("---")
+            st.subheader("👁️ 肌状態評価（目視）")
+            
+            st.info("""
+            💡 **評価のポイント:**
+            - 客観的に観察して評価してください
+            - 毎回同じ基準で評価することが重要です
+            - 迷った場合は中間の値（3）を選択
+            """)
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                roughness_score = st.slider(
+                    "肌荒れ度",
+                    min_value=1, max_value=5, value=3,
+                    help="1=非常に滑らか, 5=非常に荒れている"
+                )
+                st.caption("⭐ 非常に滑らか → ⭐⭐⭐⭐⭐ 非常に荒れている")
+                
+                pore_score = st.slider(
+                    "毛穴の目立ち度",
+                    min_value=1, max_value=5, value=3,
+                    help="1=目立たない, 5=非常に目立つ"
+                )
+                
+                wrinkle_score = st.slider(
+                    "シワの目立ち度",
+                    min_value=1, max_value=5, value=3,
+                    help="1=目立たない, 5=非常に目立つ"
+                )
+            
+            with col2:
+                dryness_score = st.slider(
+                    "乾燥度",
+                    min_value=1, max_value=5, value=3,
+                    help="1=非常に潤っている, 5=非常に乾燥している"
+                )
+                st.caption("💧 非常に潤い → 🔥🔥🔥🔥🔥 非常に乾燥")
+                
+                redness_score = st.slider(
+                    "赤み・炎症",
+                    min_value=1, max_value=5, value=3,
+                    help="1=なし, 5=強い赤み"
+                )
+                
+                dark_circle_score = st.slider(
+                    "クマの目立ち度",
+                    min_value=1, max_value=5, value=3,
+                    help="1=目立たない, 5=非常に目立つ"
+                )
+            
+            st.markdown("---")
+            st.subheader("📊 客観的測定値")
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                moisture_level = st.number_input(
+                    "肌水分量 (%)",
+                    min_value=0.0, max_value=100.0, value=40.0, step=0.1,
+                    help="肌水分計での測定値（持っている場合）"
+                )
+            with col2:
+                sebum_level = st.number_input(
+                    "皮脂量 (任意)",
+                    min_value=0.0, max_value=100.0, value=50.0, step=0.1,
+                    help="皮脂測定器での測定値（任意）"
+                )
+            
+            st.markdown("---")
+            st.subheader("📸 画像アップロード")
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                left_cheek = st.file_uploader("左頬の画像", type=['jpg', 'png'], key='left')
+            with col2:
+                right_cheek = st.file_uploader("右頬の画像", type=['jpg', 'png'], key='right')
+            
+            notes = st.text_area("備考・メモ", placeholder="特記事項があれば記入（例：化粧品を変更、体調不良など）")
+            
+            st.markdown("---")
+            
+            # データ保存ボタン
+            if st.button("💾 データを保存", type="primary", use_container_width=True):
+                if not subject_id:
+                    st.error("❌ 被験者IDを入力してください")
+                else:
+                    with st.spinner("🔄 データを処理中..."):
+                        # データエントリ作成
+                        data_entry = {
+                            'subject_id': subject_id,
+                            'timestamp': f"{measurement_date} {measurement_time}",
+                            'age': age,
+                            'gender': gender,
+                            'skin_type': skin_type,
+                            'condition': condition,
+                            'temperature': temperature,
+                            'humidity': humidity,
+                            'roughness_score': roughness_score,
+                            'dryness_score': dryness_score,
+                            'pore_score': pore_score,
+                            'wrinkle_score': wrinkle_score,
+                            'redness_score': redness_score,
+                            'dark_circle_score': dark_circle_score,
+                            'moisture_level': moisture_level,
+                            'sebum_level': sebum_level,
+                            'notes': notes
+                        }
+                        
+                        # 左頬のFD計算
+                        if left_cheek:
+                            left_img = read_bgr_from_buffer(left_cheek.read())
+                            if left_img is not None:
+                                left_fd_result = calculate_fractal_dimension(left_img)
+                                data_entry['left_cheek_fd'] = left_fd_result['fd']
+                                data_entry['left_cheek_confidence'] = left_fd_result['confidence']
+                        
+                        # 右頬のFD計算
+                        if right_cheek:
+                            right_cheek.seek(0)
+                            right_img = read_bgr_from_buffer(right_cheek.read())
+                            if right_img is not None:
+                                right_fd_result = calculate_fractal_dimension(right_img)
+                                data_entry['right_cheek_fd'] = right_fd_result['fd']
+                                data_entry['right_cheek_confidence'] = right_fd_result['confidence']
+                        
+                        # 平均FD
+                        if 'left_cheek_fd' in data_entry and 'right_cheek_fd' in data_entry:
+                            data_entry['average_fd'] = (data_entry['left_cheek_fd'] + data_entry['right_cheek_fd']) / 2
+                        elif 'left_cheek_fd' in data_entry:
+                            data_entry['average_fd'] = data_entry['left_cheek_fd']
+                        elif 'right_cheek_fd' in data_entry:
+                            data_entry['average_fd'] = data_entry['right_cheek_fd']
+                        
+                        # 保存
+                        if data_manager.save_data(data_entry):
+                            st.success("✅ データを保存しました！")
+                            
+                            # 結果表示
+                            st.subheader("📊 測定結果")
+                            col1, col2, col3 = st.columns(3)
+                            
+                            if 'left_cheek_fd' in data_entry:
+                                with col1:
+                                    st.metric("左頬 FD", f"{data_entry['left_cheek_fd']:.4f}")
+                            
+                            if 'right_cheek_fd' in data_entry:
+                                with col2:
+                                    st.metric("右頬 FD", f"{data_entry['right_cheek_fd']:.4f}")
+                            
+                            if 'average_fd' in data_entry:
+                                with col3:
+                                    st.metric("平均 FD", f"{data_entry['average_fd']:.4f}")
+                        else:
+                            st.error("❌ データの保存に失敗しました")
+        
+        with history_tab:
+            st.subheader("📚 収集済みデータ")
+            
+            df = data_manager.load_data()
+            
+            if df is None or len(df) == 0:
+                st.info("まだデータがありません。「新規データ収集」タブでデータを収集してください。")
+            else:
+                st.success(f"✅ {len(df)}件のデータを読み込みました")
+                
+                # データ概要
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("総測定回数", f"{len(df)}回")
+                with col2:
+                    st.metric("被験者数", f"{df['subject_id'].nunique()}人")
+                with col3:
+                    if 'average_fd' in df.columns:
+                        st.metric("FD値範囲", f"{df['average_fd'].min():.3f} - {df['average_fd'].max():.3f}")
+                
+                # データテーブル
+                st.dataframe(df, use_container_width=True, height=400)
+                
+                # CSVダウンロード
+                csv_data = df.to_csv(index=False, encoding='utf-8-sig')
+                st.download_button(
+                    "📥 全データをCSVでダウンロード",
+                    data=csv_data,
+                    file_name=f"experimental_data_{pd.Timestamp.now().strftime('%Y%m%d')}.csv",
+                    mime="text/csv"
+                )
+    
+    # ============================================================
+    # 📈 相関分析モード
+    # ============================================================
+    elif app_mode == "📈 相関分析":
+        st.header("📈 相関分析 - フラクタル次元と肌状態の関係")
+        
+        if not EXPERIMENT_ANALYSIS_AVAILABLE:
+            st.error("""
+            ❌ **相関分析機能が利用できません**
+            
+            `experiment_analysis.py`モジュールが見つかりません。
+            """)
+            return
+        
+        st.markdown("""
+        ### 📊 統計分析
+        収集した実験データから、フラクタル次元と肌状態の相関関係を分析します。
+        
+        **分析内容:**
+        - Pearson相関係数の計算
+        - 統計的有意性検定（p値）
+        - 散布図と回帰直線
+        - 相関ヒートマップ
+        """)
+        
+        # データマネージャー初期化
+        data_manager = ExperimentDataManager()
+        df = data_manager.load_data()
+        
+        if df is None or len(df) == 0:
+            st.warning("""
+            ⚠️ **分析するデータがありません**
+            
+            「🔬 実験データ収集」モードでデータを収集してください。
+            最低でも3件以上のデータが必要です。
+            """)
+            return
+        
+        st.success(f"✅ {len(df)}件のデータを読み込みました")
+        
+        if len(df) < 3:
+            st.warning("⚠️ データが不足しています。有意な相関分析には最低3件以上のデータが必要です。")
+            return
+        
+        # タブで分割
+        summary_tab, correlation_tab, scatter_tab, export_tab = st.tabs([
+            "📋 サマリー",
+            "🔗 相関分析",
+            "📊 散布図",
+            "📥 エクスポート"
+        ])
+        
+        with summary_tab:
+            st.subheader("📋 データサマリー")
+            
+            summary = generate_experiment_summary(df)
+            st.markdown(summary)
+            
+            # 基本統計
+            if 'average_fd' in df.columns:
+                st.subheader("📊 フラクタル次元の分布")
+                
+                fig, ax = plt.subplots(figsize=(10, 5))
+                ax.hist(df['average_fd'].dropna(), bins=20, color='steelblue', 
+                       edgecolor='darkblue', alpha=0.7)
+                ax.set_xlabel('フラクタル次元', fontsize=12, fontweight='bold')
+                ax.set_ylabel('頻度', fontsize=12, fontweight='bold')
+                ax.set_title('フラクタル次元のヒストグラム', fontsize=14, fontweight='bold')
+                ax.grid(axis='y', alpha=0.3)
+                st.pyplot(fig)
+        
+        with correlation_tab:
+            st.subheader("🔗 相関係数分析")
+            
+            if 'average_fd' not in df.columns:
+                st.error("フラクタル次元データがありません")
+                return
+            
+            # 相関計算
+            correlations = calculate_correlations(df)
+            
+            if not correlations:
+                st.warning("相関分析に必要なデータが不足しています")
+            else:
+                # 相関係数表
+                st.markdown("### 📋 相関係数一覧")
+                
+                corr_data = []
+                for name, data in correlations.items():
+                    significance = "**" if data['p_value'] < 0.01 else "*" if data['p_value'] < 0.05 else ""
+                    corr_data.append({
+                        '項目': name,
+                        '相関係数 (r)': f"{data['r']:.4f}{significance}",
+                        'p値': f"{data['p_value']:.6f}",
+                        '有意性': '✅ 有意' if data['significant'] else '❌ 非有意',
+                        'データ数': data['n']
+                    })
+                
+                corr_df = pd.DataFrame(corr_data)
+                st.dataframe(corr_df, use_container_width=True, hide_index=True)
+                
+                st.caption("* p < 0.05, ** p < 0.01")
+                
+                # 解釈ガイド
+                with st.expander("📖 相関係数の解釈ガイド"):
+                    st.markdown("""
+                    **相関係数 (r) の強さ:**
+                    - |r| ≥ 0.7: 強い相関
+                    - 0.4 ≤ |r| < 0.7: 中程度の相関
+                    - 0.2 ≤ |r| < 0.4: 弱い相関
+                    - |r| < 0.2: ほぼ相関なし
+                    
+                    **符号の意味:**
+                    - 正の相関 (r > 0): 一方が増えるともう一方も増える
+                    - 負の相関 (r < 0): 一方が増えるともう一方は減る
+                    
+                    **p値:**
+                    - p < 0.05: 統計的に有意（偶然ではない可能性が高い）
+                    - p ≥ 0.05: 統計的に非有意（偶然の可能性あり）
+                    """)
+                
+                # ヒートマップ
+                st.markdown("### 🔥 相関ヒートマップ")
+                fig = create_correlation_heatmap(correlations)
+                st.pyplot(fig)
+        
+        with scatter_tab:
+            st.subheader("📊 散布図分析")
+            
+            if 'average_fd' not in df.columns:
+                st.error("フラクタル次元データがありません")
+                return
+            
+            # 散布図作成する項目を選択
+            scatter_options = {
+                'roughness_score': '肌荒れ度',
+                'dryness_score': '乾燥度',
+                'pore_score': '毛穴',
+                'wrinkle_score': 'シワ',
+                'redness_score': '赤み',
+                'dark_circle_score': 'クマ',
+                'moisture_level': '水分量',
+                'sebum_level': '皮脂量',
+                'age': '年齢'
+            }
+            
+            available_options = {k: v for k, v in scatter_options.items() if k in df.columns}
+            
+            if not available_options:
+                st.warning("散布図を作成できる項目がありません")
+            else:
+                selected_var = st.selectbox(
+                    "比較する項目を選択",
+                    options=list(available_options.keys()),
+                    format_func=lambda x: available_options[x]
+                )
+                
+                fig = create_scatter_plot(
+                    df, 
+                    selected_var, 
+                    'average_fd',
+                    available_options[selected_var],
+                    'フラクタル次元',
+                    f'フラクタル次元 vs {available_options[selected_var]}'
+                )
+                st.pyplot(fig)
+                
+                # すべての散布図を一括表示
+                if st.checkbox("すべての散布図を表示"):
+                    cols_per_row = 2
+                    var_items = list(available_options.items())
+                    
+                    for i in range(0, len(var_items), cols_per_row):
+                        cols = st.columns(cols_per_row)
+                        for j, col in enumerate(cols):
+                            idx = i + j
+                            if idx < len(var_items):
+                                var_key, var_name = var_items[idx]
+                                with col:
+                                    fig_small = create_scatter_plot(
+                                        df,
+                                        var_key,
+                                        'average_fd',
+                                        var_name,
+                                        'FD',
+                                        f'FD vs {var_name}'
+                                    )
+                                    st.pyplot(fig_small)
+        
+        with export_tab:
+            st.subheader("📥 分析結果のエクスポート")
+            
+            # 相関分析レポート生成
+            report_lines = ["# 📊 フラクタル次元と肌状態の相関分析レポート\n"]
+            report_lines.append(f"**作成日時**: {pd.Timestamp.now().strftime('%Y年%m月%d日 %H:%M:%S')}\n")
+            report_lines.append(f"**データ数**: {len(df)}件\n")
+            
+            if correlations:
+                report_lines.append("\n## 🔗 相関係数\n")
+                for name, data in sorted(correlations.items(), key=lambda x: abs(x[1]['r']), reverse=True):
+                    sig = "**" if data['p_value'] < 0.01 else "*" if data['p_value'] < 0.05 else ""
+                    report_lines.append(f"- **{name}**: r = {data['r']:.4f}{sig}, p = {data['p_value']:.6f}, n = {data['n']}")
+                
+                report_lines.append("\n## 📋 解釈\n")
+                strong_corr = [name for name, data in correlations.items() if abs(data['r']) >= 0.7 and data['significant']]
+                if strong_corr:
+                    report_lines.append("**強い相関が見られた項目:**")
+                    for name in strong_corr:
+                        report_lines.append(f"- {name}")
+            
+            report_text = '\n'.join(report_lines)
+            
+            st.markdown(report_text)
+            
+            # ダウンロードボタン
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.download_button(
+                    "📥 レポートをダウンロード (Markdown)",
+                    data=report_text,
+                    file_name=f"correlation_report_{pd.Timestamp.now().strftime('%Y%m%d')}.md",
+                    mime="text/markdown"
+                )
+            
+            with col2:
+                if 'average_fd' in df.columns:
+                    # 分析用データをCSVで出力
+                    analysis_df = df[['subject_id', 'timestamp', 'average_fd'] + 
+                                    [col for col in df.columns if col.endswith('_score') or col.endswith('_level')]].copy()
+                    csv_analysis = analysis_df.to_csv(index=False, encoding='utf-8-sig')
+                    
+                    st.download_button(
+                        "📥 分析データをダウンロード (CSV)",
+                        data=csv_analysis,
+                        file_name=f"analysis_data_{pd.Timestamp.now().strftime('%Y%m%d')}.csv",
+                        mime="text/csv"
+                    )
 
 if __name__ == "__main__":
     app()
