@@ -2553,7 +2553,7 @@ GitHub: ryuki4219/Fractal-Analyzer-V2
 # Streamlit app
 # ============================================================
 def app():
-    st.set_page_config(layout="wide", page_title="Fractal Analyzer V2 - フラクタル次元解析")
+    st.set_page_config(layout="centered", page_title="Fractal Analyzer V2 - フラクタル次元解析")
     st.title("� Fractal Analyzer V2 - フラクタル次元解析システム")
     
     # ============================================================
@@ -2571,15 +2571,13 @@ def app():
         本サービスを利用することで、[利用規約](https://github.com/ryuki4219/Fractal-Analyzer-V2/blob/main/TERMS_OF_SERVICE.md)に同意したものとみなされます。
         """)
         
-        # ドキュメントへのリンク
-        col1, col2, col3, col4 = st.columns(4)
+        # ドキュメントへのリンク（2列×2行でモバイル対応）
+        col1, col2 = st.columns(2)
         with col1:
             st.markdown("📖 [使い方ガイド](https://github.com/ryuki4219/Fractal-Analyzer-V2/blob/main/USER_GUIDE.md)")
+            st.markdown("🔒 [プライバシーポリシー](https://github.com/ryuki4219/Fractal-Analyzer-V2/blob/main/PRIVACY_POLICY.md)")
         with col2:
             st.markdown("📜 [利用規約](https://github.com/ryuki4219/Fractal-Analyzer-V2/blob/main/TERMS_OF_SERVICE.md)")
-        with col3:
-            st.markdown("🔒 [プライバシーポリシー](https://github.com/ryuki4219/Fractal-Analyzer-V2/blob/main/PRIVACY_POLICY.md)")
-        with col4:
             st.markdown("💻 [GitHubリポジトリ](https://github.com/ryuki4219/Fractal-Analyzer-V2)")
     
     # システム情報もコンパクトに
@@ -2686,36 +2684,90 @@ def app():
             """)
     
     # ============================================================
+    # 📱 レイアウト選択機能（サイドバー）
+    # ============================================================
+    with st.sidebar:
+        st.markdown("### 📱 表示レイアウト設定")
+        layout_mode = st.radio(
+            "レイアウトモードを選択",
+            options=['モバイル版', 'デスクトップ版'],
+            index=0 if st.session_state['layout_mode'] == 'モバイル版' else 1,
+            help="""モバイル版: 2列表示、縦スクロール最適化
+デスクトップ版: 4-5列表示、横幅最大活用"""
+        )
+        
+        # レイアウトモードが変更された場合は再読み込み
+        if layout_mode != st.session_state['layout_mode']:
+            st.session_state['layout_mode'] = layout_mode
+            st.info(f"💡 {layout_mode}に切り替えました。ページを再読み込みしてください。")
+            st.button("🔄 再読み込み", on_click=lambda: st.rerun())
+        
+        st.divider()
+    
+    # ============================================================
     # 🎯 AI成長状況レポート（トップに表示）
     # ============================================================
     training_history_preview = load_training_history()
     ai_status = calculate_ai_readiness(training_history_preview)
     
-    # コンパクトなステータス表示
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.metric("🎯 AI信頼度", f"{ai_status['confidence']:.0f}%", 
-                 delta=ai_status['level'])
-    with col2:
-        status_emoji = "✅" if ai_status['ready'] else "⚠️"
-        status_text = "実用可能" if ai_status['ready'] else "学習中"
-        st.metric("📊 実用化状況", f"{status_emoji} {status_text}", 
-                 delta=f"{ai_status['stats']['total_sessions']}回学習")
-    with col3:
-        if ai_status['stats']['total_sessions'] > 0:
-            st.metric("📈 最新相関係数", 
-                     f"{ai_status['stats']['latest_correlation']:.3f}",
-                     delta=f"目標: 0.850+")
-        else:
-            st.metric("📈 最新相関係数", "未学習", delta="学習開始してください")
-    with col4:
-        if ai_status['stats']['total_sessions'] > 0:
-            st.metric("🎯 最新誤差(MAE)", 
-                     f"{ai_status['stats']['latest_mae']:.4f}",
-                     delta=f"目標: 0.010以下",
-                     delta_color="inverse")
-        else:
-            st.metric("🎯 最新誤差(MAE)", "未学習", delta="")
+    # レイアウトモードによって列数を変更
+    is_mobile = st.session_state['layout_mode'] == 'モバイル版'
+    
+    # AIステータス表示（レイアウトモードに応じて列数変更）
+    if is_mobile:
+        # モバイル版: 2×2グリッド
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("🎯 AI信頼度", f"{ai_status['confidence']:.0f}%", 
+                     delta=ai_status['level'])
+        with col2:
+            status_emoji = "✅" if ai_status['ready'] else "⚠️"
+            status_text = "実用可能" if ai_status['ready'] else "学習中"
+            st.metric("📊 実用化状況", f"{status_emoji} {status_text}", 
+                     delta=f"{ai_status['stats']['total_sessions']}回学習")
+        
+        col3, col4 = st.columns(2)
+        with col3:
+            if ai_status['stats']['total_sessions'] > 0:
+                st.metric("📈 最新相関係数", 
+                         f"{ai_status['stats']['latest_correlation']:.3f}",
+                         delta=f"目標: 0.850+")
+            else:
+                st.metric("📈 最新相関係数", "未学習", delta="学習開始してください")
+        with col4:
+            if ai_status['stats']['total_sessions'] > 0:
+                st.metric("🎯 最新誤差(MAE)", 
+                         f"{ai_status['stats']['latest_mae']:.4f}",
+                         delta=f"目標: 0.010以下",
+                         delta_color="inverse")
+            else:
+                st.metric("🎯 最新誤差(MAE)", "未学習", delta="")
+    else:
+        # デスクトップ版: 1×4横並び
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("🎯 AI信頼度", f"{ai_status['confidence']:.0f}%", 
+                     delta=ai_status['level'])
+        with col2:
+            status_emoji = "✅" if ai_status['ready'] else "⚠️"
+            status_text = "実用可能" if ai_status['ready'] else "学習中"
+            st.metric("📊 実用化状況", f"{status_emoji} {status_text}", 
+                     delta=f"{ai_status['stats']['total_sessions']}回学習")
+        with col3:
+            if ai_status['stats']['total_sessions'] > 0:
+                st.metric("📈 最新相関係数", 
+                         f"{ai_status['stats']['latest_correlation']:.3f}",
+                         delta=f"目標: 0.850+")
+            else:
+                st.metric("📈 最新相関係数", "未学習", delta="学習開始してください")
+        with col4:
+            if ai_status['stats']['total_sessions'] > 0:
+                st.metric("🎯 最新誤差(MAE)", 
+                         f"{ai_status['stats']['latest_mae']:.4f}",
+                         delta=f"目標: 0.010以下",
+                         delta_color="inverse")
+            else:
+                st.metric("🎯 最新誤差(MAE)", "未学習", delta="")
     
     # 詳細レポートはエクスパンダーで
     if ai_status['stats']['total_sessions'] > 0:
@@ -3196,11 +3248,12 @@ def app():
     app_mode = st.sidebar.radio(
         "モードを選択",
         [
-            "🎓 学習モード (画像ペアが必要)", 
             "🔮 推論モード (低画質画像のみで予測)",
+            "🎓 学習モード (画像ペアが必要)", 
             "📊 研究報告・品質ガイド"
         ],
-        help="学習モード: 高画質+低画質ペアでAIを学習\n推論モード: 学習済みモデルで低画質画像から予測\n研究報告: 品質最適化研究の結果と実用ガイド"
+        index=0,  # デフォルトを推論モードに設定
+        help="推論モード: 学習済みモデルで低画質画像から予測（メイン機能）\n学習モード: 高画質+低画質ペアでAIを学習\n研究報告: 品質最適化研究の結果と実用ガイド"
     )
     
     st.sidebar.markdown("---")
@@ -3406,15 +3459,31 @@ def app():
                             low13_count = sum(1 for qr in quality_results if qr['result'].get('quality_level') == 'low1-3')
                             low810_count = sum(1 for qr in quality_results if qr['result'].get('quality_level') == 'low8-10')
                             
-                            col1, col2, col3, col4 = st.columns(4)
-                            with col1:
-                                st.metric("総画像数", total_count)
-                            with col2:
-                                st.metric("高品質", high_quality_count)
-                            with col3:
-                                st.metric("Golden Zone", low47_count)
-                            with col4:
-                                st.metric("低信頼度", low810_count)
+                            # レイアウトモードに応じて列数変更
+                            if is_mobile:
+                                # モバイル版: 2×2グリッド
+                                col1, col2 = st.columns(2)
+                                with col1:
+                                    st.metric("総画像数", total_count)
+                                with col2:
+                                    st.metric("高品質", high_quality_count)
+                                
+                                col3, col4 = st.columns(2)
+                                with col3:
+                                    st.metric("Golden Zone", low47_count)
+                                with col4:
+                                    st.metric("低信頼度", low810_count)
+                            else:
+                                # デスクトップ版: 1×4横並び
+                                col1, col2, col3, col4 = st.columns(4)
+                                with col1:
+                                    st.metric("総画像数", total_count)
+                                with col2:
+                                    st.metric("高品質", high_quality_count)
+                                with col3:
+                                    st.metric("Golden Zone", low47_count)
+                                with col4:
+                                    st.metric("低信頼度", low810_count)
                             
                             # 情報表示
                             if low810_count > 0:
@@ -3621,12 +3690,29 @@ def app():
                                 grade_counts[grade] = grade_counts.get(grade, 0) + 1
                             
                             st.markdown("### 📊 肌品質グレード分布")
-                            grade_cols = st.columns(5)
-                            for idx, grade in enumerate(['S', 'A', 'B', 'C', 'D']):
-                                with grade_cols[idx]:
+                            # レイアウトモードに応じて表示変更
+                            grade_list = ['S', 'A', 'B', 'C', 'D']
+                            if is_mobile:
+                                # モバイル版: 2列グリッド
+                                for i in range(0, len(grade_list), 2):
+                                    cols = st.columns(2)
+                                    for j, col in enumerate(cols):
+                                        if i + j < len(grade_list):
+                                            grade = grade_list[i + j]
+                                            count = grade_counts.get(grade, 0)
+                                            icon = evaluator.grade_criteria[grade]['icon']
+                                            grade_info = evaluator.grade_criteria[grade]
+                                            with col:
+                                                st.metric(f"{icon} グレード{grade}", f"{count}枚", delta=grade_info['description'])
+                            else:
+                                # デスクトップ版: 1×5横並び
+                                cols = st.columns(5)
+                                for idx, grade in enumerate(grade_list):
                                     count = grade_counts.get(grade, 0)
                                     icon = evaluator.grade_criteria[grade]['icon']
-                                    st.metric(f"{icon} {grade}", f"{count}枚")
+                                    grade_info = evaluator.grade_criteria[grade]
+                                    with cols[idx]:
+                                        st.metric(f"{icon} {grade}", f"{count}枚", delta=grade_info['description'])
                             
                             # 詳細な推奨ケア
                             with st.expander("💡 推奨ケアの詳細"):
@@ -4327,7 +4413,13 @@ def app():
                             # 総合評価
                             st.markdown("### 🎯 総合評価")
                             
-                            col1, col2, col3, col4 = st.columns(4)
+                            # レイアウトモードに応じて列数変更
+                            if is_mobile:
+                                # モバイル版: 2×2グリッド
+                                col1, col2 = st.columns(2)
+                            else:
+                                # デスクトップ版: 1×4横並び
+                                col1, col2, col3, col4 = st.columns(4)
                             
                             with col1:
                                 # 相関係数の評価
@@ -4378,6 +4470,10 @@ def app():
                                     f"{mae:.4f}",
                                     delta=f"{mae_grade}評価 {mae_emoji}"
                                 )
+                            
+                            # モバイル版の場合は2行目を作成
+                            if is_mobile:
+                                col3, col4 = st.columns(2)
                             
                             with col3:
                                 st.metric(
