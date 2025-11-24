@@ -438,7 +438,7 @@ def fast_fractal_std_boxcount_batched(img_bgr, scales=(2,4,8,16,32,64), use_gpu=
     # 2D画像のフラクタル次元は2〜3の範囲に制限
     D = np.clip(D, 2.0, 3.0)
 
-    return float(D), np.array(valid_scales), np.array(Nh_vals)
+    return float(D), np.array(valid_scales), np.array(Nh_vals), log_h, log_Nh, coeffs
 
 # ============================================================
 # 3D DBC fast version (vectorized)
@@ -544,6 +544,57 @@ def extract_feature_vector(img_bgr, size=256, use_gpu=None):
 
 # 特徴量名のリスト
 FEATURE_NAMES = ['mean', 'std', 'edge_strength', 'noise_level', 'entropy']
+
+# ============================================================
+# 最小二乗法フィッティングのグラフを描画
+# ============================================================
+def plot_least_squares_fit(log_h, log_Nh, coeffs, fd_value):
+    """
+    最小二乗法による線形フィッティングのグラフを描画
+    
+    Args:
+        log_h: log(スケール)の配列
+        log_Nh: log(カウント値)の配列
+        coeffs: polyfitの係数 [slope, intercept]
+        fd_value: 計算されたフラクタル次元
+    
+    Returns:
+        matplotlib figure
+    """
+    fig, ax = plt.subplots(figsize=(10, 6))
+    
+    # 実測値をプロット
+    ax.scatter(log_h, log_Nh, s=100, alpha=0.6, color='blue', 
+               label='実測値', edgecolors='navy', linewidth=2)
+    
+    # 最小二乗法によるフィッティング直線
+    fit_line = coeffs[0] * log_h + coeffs[1]
+    ax.plot(log_h, fit_line, 'r-', linewidth=2, 
+            label=f'最小二乗法フィット\n傾き = {coeffs[0]:.4f}')
+    
+    # グリッド
+    ax.grid(True, alpha=0.3, linestyle='--')
+    
+    # ラベルとタイトル
+    ax.set_xlabel('log(スケール)', fontsize=12, fontweight='bold')
+    ax.set_ylabel('log(カウント値)', fontsize=12, fontweight='bold')
+    ax.set_title(f'Box-Counting法：最小二乗法フィッティング\nフラクタル次元 = {fd_value:.4f}', 
+                 fontsize=14, fontweight='bold', pad=20)
+    
+    # 凡例
+    ax.legend(fontsize=11, loc='best', framealpha=0.9)
+    
+    # 統計情報を追加
+    residuals = log_Nh - fit_line
+    r_squared = 1 - (np.sum(residuals**2) / np.sum((log_Nh - np.mean(log_Nh))**2))
+    
+    info_text = f'決定係数 R² = {r_squared:.4f}\n切片 = {coeffs[1]:.4f}\nデータ点数 = {len(log_h)}'
+    ax.text(0.02, 0.98, info_text, transform=ax.transAxes,
+            fontsize=10, verticalalignment='top',
+            bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+    
+    plt.tight_layout()
+    return fig
 
 # ============================================================
 # Train FD predictor (low->high) using LightGBM (fast, parallel)
@@ -1071,11 +1122,12 @@ def calculate_fractal_dimension(img):
     """
     try:
         # 高速ベクトル化されたボックスカウンティング法を使用
-        fd_value, scales, counts = fast_fractal_std_boxcount_batched(img, use_gpu=False)
+        fd_value, scales, counts, log_h, log_Nh, coeffs = fast_fractal_std_boxcount_batched(img, use_gpu=False)
         
         # 計算失敗時はナイーブ法にフォールバック
         if fd_value is None:
             fd_value, scales, counts = fractal_dimension_naive(img)
+            log_h, log_Nh, coeffs = None, None, None
         
         # まだNoneの場合はエラー
         if fd_value is None:
@@ -1097,7 +1149,12 @@ def calculate_fractal_dimension(img):
             'fd': float(fd_value),
             'confidence': confidence,
             'method': '直接解析 (Box-Counting法)',
-            'range': [fd_min, fd_max]
+            'range': [fd_min, fd_max],
+            'fitting_data': {
+                'log_h': log_h,
+                'log_Nh': log_Nh,
+                'coeffs': coeffs
+            } if log_h is not None else None
         }
     except Exception as e:
         # エラー時は低信頼度の結果を返す
@@ -3388,6 +3445,8 @@ def app():
                     if st.button("🔮 フラクタル次元を予測"):
                         st.info("処理を開始します...")
                         
+                        # session_stateに結果を保存
+                        st.session_state['inference_results'] = []
                         results = []
                         progress_bar = st.progress(0)
                         
@@ -3404,7 +3463,7 @@ def app():
                                 
                                 # 処理方法に応じて分岐
                                 if processing_method == 'direct_analysis':
-                                    # 直接解析（high, low1-3）
+                                    # 直接解析(high, low1-3)
                                     st.info(f"📐 {img_file.name}: 直接解析を実行中...")
                                     fd_result_dict = calculate_fractal_dimension(img)
                                     fd_value = fd_result_dict['fd']
@@ -3415,6 +3474,7 @@ def app():
                                         'image': img,
                                         'method': 'direct_analysis',
                                         'quality_level': quality_level,
+                                        'fitting_data': fd_result_dict.get('fitting_data'),
                                         'confidence': {
                                             'overall_confidence': fd_result_dict['confidence'],
                                             'confidence_level': '高信頼度',
@@ -3441,7 +3501,14 @@ def app():
                             
                             progress_bar.progress((idx + 1) / len(low_quality_imgs))
                         
+                        # session_stateに結果を保存
+                        st.session_state['inference_results'] = results
+                        
                         st.success("✅ 処理完了!")
+                    
+                    # 結果が存在する場合に表示（ボタンの外で処理）
+                    if 'inference_results' in st.session_state and st.session_state['inference_results']:
+                        results = st.session_state['inference_results']
                         
                         # 結果表示
                         st.subheader("📊 解析・予測結果")
@@ -3703,7 +3770,8 @@ def app():
                             eval_mode = st.radio(
                                 "評価モード",
                                 ["総合評価", "個別評価", "年齢層比較"],
-                                horizontal=True
+                                horizontal=True,
+                                key="skin_evaluation_mode"
                             )
                             
                             evaluator = SkinQualityEvaluator()
@@ -3727,16 +3795,16 @@ def app():
                                         )
                                     with col2:
                                         st.metric(
-                                        "平均FD値",
-                                        f"{multi_eval['statistics']['mean']:.4f}",
-                                        delta=f"標準偏差: {multi_eval['statistics']['std']:.4f}"
-                                    )
-                                with col3:
-                                    st.metric(
-                                        "一貫性",
-                                        multi_eval['consistency']['level'],
-                                        delta=multi_eval['consistency']['message']
-                                    )
+                                            "平均FD値",
+                                            f"{multi_eval['statistics']['mean']:.4f}",
+                                            delta=f"標準偏差: {multi_eval['statistics']['std']:.4f}"
+                                        )
+                                    with col3:
+                                        st.metric(
+                                            "一貫性",
+                                            multi_eval['consistency']['level'],
+                                            delta=multi_eval['consistency']['message']
+                                        )
                                 
                                 # 解釈とアドバイス
                                 st.markdown("#### 💭 解釈")
@@ -3753,99 +3821,129 @@ def app():
                                     st.write(f"**最大値:** {stats['max']:.4f}")
                                     st.write(f"**中央値:** {stats['median']:.4f}")
                                     st.write(f"**範囲:** {stats['range']:.4f}")
-                        
-                        elif eval_mode == "個別評価":
-                            # 個別画像の詳細評価
-                            st.markdown("### 📋 個別画像評価")
                             
-                            selected_idx = st.selectbox(
-                                "評価する画像を選択",
-                                range(len(results)),
-                                format_func=lambda i: results[i]['filename']
-                            )
-                            
-                            if selected_idx is not None:
-                                result = results[selected_idx]
-                                fd_value = result['predicted_fd']
+                            elif eval_mode == "個別評価":
+                                # 個別画像の詳細評価
+                                st.markdown("### 📋 個別画像評価")
                                 
-                                single_eval = evaluator.evaluate_single(fd_value)
+                                selected_idx = st.selectbox(
+                                    "評価する画像を選択",
+                                    range(len(results)),
+                                    format_func=lambda i: results[i]['filename'],
+                                    key="selected_image_idx"
+                                )
                                 
-                                col1, col2 = st.columns([1, 2])
-                                
-                                with col1:
-                                    st.image(
-                                        cv2.cvtColor(result['image'], cv2.COLOR_BGR2RGB),
-                                        caption=result['filename'],
-                                        use_container_width=True
-                                    )
-                                
-                                with col2:
-                                    st.markdown(f"### {single_eval['grade_emoji']} {single_eval['grade']}")
-                                    st.metric("スコア", f"{single_eval['score']:.1f}/100")
-                                    st.metric("FD値", f"{fd_value:.4f}")
+                                if selected_idx is not None:
+                                    result = results[selected_idx]
+                                    fd_value = result['predicted_fd']
                                     
-                                    st.markdown("#### 特徴分析")
-                                    features = single_eval['features']
-                                    st.write(f"- **スムーズさ:** {features['smoothness']}")
-                                    st.write(f"- **きめ細かさ:** {features['texture']}")
-                                    st.write(f"- **複雑度:** {features['complexity']}")
-                                
-                                st.markdown("#### 💭 解釈")
-                                st.info(single_eval['interpretation'])
-                                
-                                st.markdown("#### 📝 改善提案")
-                                for rec in single_eval['recommendations']:
-                                    st.write(rec)
-                        
-                        else:  # 年齢層比較
-                            st.markdown("### 👥 年齢層との比較")
-                            
-                            age_group = st.selectbox(
-                                "あなたの年齢層を選択",
-                                ['10-20', '20-30', '30-40', '40-50', '50+'],
-                                format_func=lambda x: f"{x}代" if x != '50+' else '50代以上'
-                            )
-                            
-                            # 平均FD値を使用
-                            fd_values = [r['predicted_fd'] for r in results]
-                            avg_fd = np.mean(fd_values)
-                            
-                            comparison = evaluator.compare_with_age_group(avg_fd, age_group)
-                            
-                            if 'error' not in comparison:
-                                col1, col2, col3 = st.columns(3)
-                                
-                                with col1:
-                                    st.metric(
-                                        "あなたのFD値",
-                                        f"{comparison['your_value']:.4f}"
+                                    single_eval = evaluator.evaluate_single(fd_value)
+                                    
+                                    col1, col2 = st.columns([1, 2])
+                                    
+                                    with col1:
+                                        st.image(
+                                            cv2.cvtColor(result['image'], cv2.COLOR_BGR2RGB),
+                                            caption=result['filename'],
+                                            use_container_width=True
+                                        )
+                                    
+                                    with col2:
+                                        st.markdown(f"### {single_eval['grade_emoji']} {single_eval['grade']}")
+                                        st.metric("スコア", f"{single_eval['score']:.1f}/100")
+                                        st.metric("FD値", f"{fd_value:.4f}")
+                                        
+                                        st.markdown("#### 特徴分析")
+                                        features = single_eval['features']
+                                        st.write(f"- **スムーズさ:** {features['smoothness']}")
+                                        st.write(f"- **きめ細かさ:** {features['texture']}")
+                                        st.write(f"- **複雑度:** {features['complexity']}")
+                                    
+                                    # 最小二乗法のグラフを表示するオプション
+                                    show_fitting_graph = st.checkbox(
+                                        "🔬 最小二乗法フィッティンググラフを表示", 
+                                        value=False,
+                                        key="show_least_squares_graph"
                                     )
+                                    
+                                    if show_fitting_graph and result.get('fitting_data'):
+                                        fitting_data = result['fitting_data']
+                                        if fitting_data and fitting_data['log_h'] is not None:
+                                            st.markdown("#### 📊 最小二乗法フィッティング解析")
+                                            fig = plot_least_squares_fit(
+                                                fitting_data['log_h'],
+                                                fitting_data['log_Nh'],
+                                                fitting_data['coeffs'],
+                                                fd_value
+                                            )
+                                            st.pyplot(fig)
+                                            plt.close(fig)
+                                            
+                                            st.caption("""
+                                            **グラフの見方:**
+                                            - 青い点: 実際の測定データ (log(スケール) vs log(ボックス数))
+                                            - 赤い線: 最小二乗法によるフィッティング直線
+                                            - 傾きの絶対値がフラクタル次元(FD)値になります
+                                            - R²値が1に近いほど、フィッティングの精度が高いことを示します
+                                            """)
+                                    
+                                    st.markdown("#### 💭 解釈")
+                                    st.info(single_eval['interpretation'])
+                                    
+                                    st.markdown("#### 📝 改善提案")
+                                    for rec in single_eval['recommendations']:
+                                        st.write(rec)
+                            
+                            else:  # 年齢層比較
+                                st.markdown("### 👥 年齢層との比較")
                                 
-                                with col2:
-                                    st.metric(
-                                        "年齢層平均",
-                                        f"{comparison['age_average']:.4f}",
-                                        delta=f"差: {comparison['difference']:+.4f}"
-                                    )
+                                age_group = st.selectbox(
+                                    "あなたの年齢層を選択",
+                                    ['10-20', '20-30', '30-40', '40-50', '50+'],
+                                    format_func=lambda x: f"{x}代" if x != '50+' else '50代以上',
+                                    key="age_group_selection"
+                                )
                                 
-                                with col3:
-                                    st.metric(
-                                        "パーセンタイル",
-                                        f"{comparison['percentile']:.0f}%"
-                                    )
+                                # 平均FD値を使用
+                                fd_values = [r['predicted_fd'] for r in results]
+                                avg_fd = np.mean(fd_values)
                                 
-                                st.markdown("#### 💭 比較結果")
-                                st.info(comparison['interpretation'])
+                                comparison = evaluator.compare_with_age_group(avg_fd, age_group)
                                 
-                                # Z-scoreの解説
-                                with st.expander("📊 統計的解釈"):
-                                    st.write(f"**Z-スコア:** {comparison['z_score']:.2f}")
-                                    st.write("Z-スコアの意味:")
-                                    st.write("- 0付近: 平均的")
-                                    st.write("- -1～-2: 平均より良好")
-                                    st.write("- -2以下: 非常に良好")
-                                    st.write("- +1～+2: 平均より高め")
-                                    st.write("- +2以上: 要改善")
+                                if 'error' not in comparison:
+                                    col1, col2, col3 = st.columns(3)
+                                    
+                                    with col1:
+                                        st.metric(
+                                            "あなたのFD値",
+                                            f"{comparison['your_value']:.4f}"
+                                        )
+                                    
+                                    with col2:
+                                        st.metric(
+                                            "年齢層平均",
+                                            f"{comparison['age_average']:.4f}",
+                                            delta=f"差: {comparison['difference']:+.4f}"
+                                        )
+                                    
+                                    with col3:
+                                        st.metric(
+                                            "パーセンタイル",
+                                            f"{comparison['percentile']:.0f}%"
+                                        )
+                                    
+                                    st.markdown("#### 💭 比較結果")
+                                    st.info(comparison['interpretation'])
+                                    
+                                    # Z-scoreの解説
+                                    with st.expander("📊 統計的解釈"):
+                                        st.write(f"**Z-スコア:** {comparison['z_score']:.2f}")
+                                        st.write("Z-スコアの意味:")
+                                        st.write("- 0付近: 平均的")
+                                        st.write("- -1～-2: 平均より良好")
+                                        st.write("- -2以下: 非常に良好")
+                                        st.write("- +1～+2: 平均より高め")
+                                        st.write("- +2以上: 要改善")
             
             # ========================================
             # 🎯 精度検証モード
