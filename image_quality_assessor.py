@@ -16,20 +16,21 @@ from datetime import datetime
 # 品質基準の定義
 # ============================================================
 
+# 直接解析推奨の基準（大幅に緩和 - 一般的なスマホ写真を含む）
 HIGH_QUALITY_CRITERIA = {
     "min_resolution": {
-        "width": 1920,
-        "height": 1080,
-        "total_pixels": 2073600  # 約200万画素
+        "width": 640,            # 1920→640 大幅緩和
+        "height": 640,           # 1080→640 大幅緩和
+        "total_pixels": 409600   # 約41万画素（640×640）
     },
     "jpeg_quality": {
-        "min_quality": 85,
-        "max_compression_ratio": 10
+        "min_quality": 60,       # 85→60 一般的なJPEG品質
+        "max_compression_ratio": 15  # 10→15 より多くを受け入れ
     },
     "quality_metrics": {
-        "min_sharpness": 100,    # ラプラシアン分散
-        "max_noise_level": 15,   # ノイズレベル
-        "min_snr": 20,           # SNR (dB)
+        "min_sharpness": 12,     # 100→12 実データに基づく現実的な値
+        "max_noise_level": 40,   # 15→40 ノイズ許容範囲拡大
+        "min_snr": 15,           # 20→15 SNR基準緩和
     },
     "color": {
         "bit_depth": 24,
@@ -40,24 +41,34 @@ HIGH_QUALITY_CRITERIA = {
 # 品質レベル分類基準（ユーザーの実際の画像データ330枚に基づいて調整）
 # シャープネス値はTenengrad法による実測値を基準
 # データセット分析: シャープネス範囲 4.5-61.2、解像度範囲 22×22-2865×2865
-# 250×250 (62,500px) の解像度スコア: 5.09%
+# 
+# 【重要な設計思想】
+# "実際の解析に勝るものはない" - 直接解析を最優先
+# iPhone写真などの一般的な高品質画像は直接解析に回すべき
+# AI予測は本当に低品質な画像のみに使用
+#
+# 閾値の考え方:
+# - high: iPhone 7以降、一般的なデジカメで撮影した写真 (640×640以上、シャープネス中程度)
+# - low4-7: AI予測が有効な中〜低品質領域 (AI学習のGolden Zone)
+# - low1-3: 品質過剰領域（直接解析推奨）
+# - low8-10: 解析拒否推奨（情報量不足）
 QUALITY_THRESHOLDS = {
     'high': {
-        'resolution_score': 80,   # 90→80 大きな画像を受け入れやすく
-        'sharpness': 30,          # 40→30 実データの高品質画像に合わせる
-        'noise_max': 30,
-        'jpeg_quality_min': 75
+        'resolution_score': 20,   # 80→20 大幅緩和（約40万画素、640×640程度でOK）
+        'sharpness': 12,          # 30→12 実データ中央値付近（iPhone写真を含む）
+        'noise_max': 40,          # 30→40 ノイズ許容範囲拡大
+        'jpeg_quality_min': 60    # 75→60 一般的なJPEG品質を受け入れ
     },
     'low4-7': {
-        'resolution_score': 5,    # 30→5 250×250(5.09%)を含むように調整
-        'sharpness': 8,           # 15→8 実データの約70%が10-25の範囲にあるため
+        'resolution_score': 5,    # 維持（250×250程度）
+        'sharpness': 8,           # 維持（AI予測が有効な範囲）
         'noise_max': 80,
         'jpeg_quality_min': 30
     },
     'low1-3': {
-        # 高JPEG品質だが他の指標が基準未達
+        # 高JPEG品質だが他の指標が基準未達（稀なケース）
         'jpeg_quality_min': 75,
-        'sharpness_max': 30       # 40→30 実データに合わせる
+        'sharpness_max': 12       # 30→12 新しいhigh基準に合わせる
     },
     'low8-10': {
         # 上記のいずれにも該当しない低品質
@@ -405,39 +416,41 @@ def get_recommendation(quality_level):
         'high': {
             'status': 'excellent',
             'icon': '✅',
-            'title': '高品質画像',
-            'message': 'この画像は推奨品質です。直接解析を行います。',
+            'title': '高品質画像 - 直接解析推奨',
+            'message': 'この画像は十分な品質です。直接解析により最も正確な結果が得られます。',
             'processing_method': 'direct_analysis',
-            'confidence': 'very_high',  # デフォルト値（動的に更新される）
+            'confidence': 'very_high',
+            'advice': '直接解析が最適です。AI予測より高精度な結果が得られます。',
             'can_analyze': True
         },
         'low4-7': {
             'status': 'good',
-            'icon': '✅',
-            'title': '推奨品質範囲',
-            'message': 'この画像はGolden Zone（Low4-7）です。AI予測を使用します。',
+            'icon': '🔮',
+            'title': 'AI予測推奨範囲（Golden Zone）',
+            'message': 'この画像はAI予測に最適な品質範囲です。学習データとの一貫性が高く、信頼性の高い予測が可能です。',
             'processing_method': 'ai_prediction',
-            'confidence': 'high',  # デフォルト値（メトリクスに応じてvery_high/high/middleに動的更新）
+            'confidence': 'high',
+            'advice': 'AI予測が有効な品質範囲です。研究・学習用途に最適です。',
             'can_analyze': True
         },
         'low1-3': {
             'status': 'good',
             'icon': '✅',
-            'title': '品質過剰（直接解析推奨）',
-            'message': 'JPEG品質が高すぎるため、AI予測には不向きですが、直接解析で正確な結果が得られます。',
+            'title': '高品質（直接解析を推奨）',
+            'message': 'JPEG品質が高く、直接解析に適しています。AI予測より直接計算の方が高精度です。',
             'processing_method': 'direct_analysis',
-            'confidence': 'high',  # デフォルト値（動的に更新される）
-            'advice': '直接解析を使用してください。またはJPEG品質を70-85%程度に調整して再撮影することもできます',
+            'confidence': 'high',
+            'advice': '直接解析を使用してください。AI予測に回す必要はありません。',
             'can_analyze': True
         },
         'low8-10': {
             'status': 'rejected',
             'icon': '❌',
-            'title': '解析拒否推奨（解像度不足）',
-            'message': '画像の解像度が著しく低いため、解析結果の信頼性が極めて低くなります。',
+            'title': '品質不足 - 解析非推奨',
+            'message': '画像の品質が著しく低く、解析結果の信頼性が極めて低くなります（50×50ピクセル未満、または情報量不足）。',
             'processing_method': 'rejected',
-            'confidence': 'low',  # デフォルト値（動的に更新される）
-            'advice': '50×50ピクセル以上の画像で再撮影してください。推奨デバイスを使用することをお勧めします。',
+            'confidence': 'low',
+            'advice': 'より高品質な画像で再撮影してください。推奨: 640×640ピクセル以上、iPhone 7以降またはそれに準ずるカメラ。',
             'can_analyze': False
         }
     }
@@ -452,40 +465,58 @@ def get_recommendation(quality_level):
 RECOMMENDED_DEVICES = {
     'excellent': {
         'smartphones': [
-            'iPhone 11以降', 'iPhone XS以降', 'iPhone 8以降',
-            'Galaxy S10以降', 'Galaxy S8以降',
-            'Pixel 4以降', 'Pixel 2以降',
-            'Xperia 1以降', 'Xperia XZ以降'
+            'iPhone 7以降',        # 閾値緩和により7以降もOKに
+            'Galaxy S7以降',
+            'Pixel 2以降',
+            'Xperia XZ以降',
+            '2016年以降のミドル〜ハイエンド機種'
         ],
         'cameras': [
             '一眼レフ全般',
             'ミラーレス全般',
-            'コンパクトカメラ（2018年以降）'
+            'コンパクトカメラ（2015年以降）',
+            '800万画素以上のデジカメ'
         ],
-        'quality_range': 'low4-7またはhigh',
-        'confidence': '高い'
+        'quality_range': 'high（直接解析）',
+        'confidence': '非常に高い - 直接解析推奨'
+    },
+    'good': {
+        'smartphones': [
+            'iPhone 6/6s',
+            'Galaxy S6',
+            'Xperia Z5',
+            '2014-2015年のミドルレンジ機種'
+        ],
+        'cameras': [
+            'コンパクトカメラ（2012-2014年）',
+            '500-800万画素のデジカメ'
+        ],
+        'quality_range': 'low4-7（AI予測推奨）',
+        'confidence': '高い - AI予測が有効'
     },
     'acceptable': {
         'smartphones': [
-            'iPhone 6/6s/7',
-            'Galaxy S6/S7',
-            '2015-2017年のミドルレンジ機種'
+            'iPhone 5/5s',
+            'Galaxy S4/S5',
+            '2012-2013年の機種'
         ],
         'cameras': [
-            'コンパクトカメラ（2013-2017年）'
+            'コンパクトカメラ（2010-2011年）',
+            '300-500万画素のデジカメ'
         ],
         'quality_range': 'low4-7（下限）',
         'confidence': '中程度'
     },
     'not_recommended': {
         'smartphones': [
-            'iPhone 5以前',
-            '2013年以前の機種',
-            '500万画素以下のカメラ'
+            'iPhone 4以前',
+            '2011年以前の機種',
+            '200万画素以下のカメラ'
         ],
         'cameras': [
             'トイカメラ',
-            '古い携帯電話カメラ'
+            '古い携帯電話カメラ（ガラケー）',
+            'VGA画質のカメラ'
         ],
         'quality_range': 'low8-10',
         'confidence': '使用不可'
