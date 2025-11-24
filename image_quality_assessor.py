@@ -24,11 +24,11 @@ HIGH_QUALITY_CRITERIA = {
         "total_pixels": 409600   # 約41万画素（640×640）
     },
     "jpeg_quality": {
-        "min_quality": 60,       # 85→60 一般的なJPEG品質
+        "min_quality": 50,       # 85→60→50 ファイルサイズ推定を考慮
         "max_compression_ratio": 15  # 10→15 より多くを受け入れ
     },
     "quality_metrics": {
-        "min_sharpness": 12,     # 100→12 実データに基づく現実的な値
+        "min_sharpness": 8,      # 100→12→8 ピンボケ気味の画像も受け入れ
         "max_noise_level": 40,   # 15→40 ノイズ許容範囲拡大
         "min_snr": 15,           # 20→15 SNR基準緩和
     },
@@ -54,10 +54,10 @@ HIGH_QUALITY_CRITERIA = {
 # - low8-10: 解析拒否推奨（情報量不足）
 QUALITY_THRESHOLDS = {
     'high': {
-        'resolution_score': 20,   # 80→20 大幅緩和（約40万画素、640×640程度でOK）
-        'sharpness': 12,          # 30→12 実データ中央値付近（iPhone写真を含む）
+        'resolution_score': 5,    # 80→20→5 さらに緩和（188×188程度でOK）
+        'sharpness': 8,           # 30→12→8 ピンボケ気味も受け入れ
         'noise_max': 40,          # 30→40 ノイズ許容範囲拡大
-        'jpeg_quality_min': 60    # 75→60 一般的なJPEG品質を受け入れ
+        'jpeg_quality_min': 50    # 75→60→50 ファイルサイズ推定を考慮
     },
     'low4-7': {
         'resolution_score': 5,    # 維持（250×250程度）
@@ -68,7 +68,7 @@ QUALITY_THRESHOLDS = {
     'low1-3': {
         # 高JPEG品質だが他の指標が基準未達（稀なケース）
         'jpeg_quality_min': 75,
-        'sharpness_max': 12       # 30→12 新しいhigh基準に合わせる
+        'sharpness_max': 8        # 30→12→8 新しいhigh基準に合わせる
     },
     'low8-10': {
         # 上記のいずれにも該当しない低品質
@@ -150,15 +150,20 @@ def estimate_jpeg_quality(image_path):
         int: 推定JPEG品質（0-100）
     """
     try:
-        # PILで画像を開く
-        pil_img = Image.open(image_path)
+        # 日本語パス対応: バイナリで読み込み
+        with open(image_path, 'rb') as f:
+            file_bytes = f.read()
+        
+        # BytesIOを使ってPILで開く
+        from io import BytesIO
+        pil_img = Image.open(BytesIO(file_bytes))
         
         # JPEG品質情報を取得（可能な場合）
         if hasattr(pil_img, 'info') and 'quality' in pil_img.info:
             return pil_img.info['quality']
         
         # ファイルサイズから推定
-        file_size = os.path.getsize(image_path)
+        file_size = len(file_bytes)
         img_array = np.array(pil_img)
         
         if len(img_array.shape) == 3:
@@ -288,12 +293,24 @@ def assess_image_quality(image_path):
         dict: 品質評価結果
     """
     try:
-        # 画像読み込み
-        image = cv2.imread(image_path)
+        # 画像読み込み（日本語パス対応）
+        # cv2.imreadは日本語パスを扱えないため、numpyを経由
+        try:
+            with open(image_path, 'rb') as f:
+                file_bytes = f.read()
+            import numpy as np
+            arr = np.frombuffer(file_bytes, np.uint8)
+            image = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+        except Exception as e:
+            return {
+                'error': 'image_read_failed',
+                'message': f'画像を読み込めませんでした: {str(e)}'
+            }
+        
         if image is None:
             return {
                 'error': 'image_read_failed',
-                'message': '画像を読み込めませんでした'
+                'message': '画像を読み込めませんでした（デコードエラー）'
             }
         
         # 各指標を計算
