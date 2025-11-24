@@ -2557,36 +2557,34 @@ def app():
     st.title("� Fractal Analyzer V2 - フラクタル次元解析システム")
     
     # ============================================================
-    # ⚠️ 重要な注意事項・免責事項
+    # ⚠️ 重要な注意事項・免責事項（コンパクト版）
     # ============================================================
-    st.warning("""
-    ⚠️ **重要な注意事項**
+    with st.expander("⚠️ 重要な注意事項（必ずお読みください）", expanded=False):
+        st.warning("""
+        **本サービスは研究・教育目的のツールであり、医療診断を目的としたものではありません。**
+        
+        - 🔬 フラクタル幾何学の研究・学習用ツールです
+        - ❌ 医療診断・健康判定には使用しないでください
+        - ⚕️ 医療に関する判断は、必ず医療機関・医師にご相談ください
+        - 📊 解析結果は参考値としてご利用ください
+        
+        本サービスを利用することで、[利用規約](https://github.com/ryuki4219/Fractal-Analyzer-V2/blob/main/TERMS_OF_SERVICE.md)に同意したものとみなされます。
+        """)
+        
+        # ドキュメントへのリンク
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.markdown("📖 [使い方ガイド](https://github.com/ryuki4219/Fractal-Analyzer-V2/blob/main/USER_GUIDE.md)")
+        with col2:
+            st.markdown("📜 [利用規約](https://github.com/ryuki4219/Fractal-Analyzer-V2/blob/main/TERMS_OF_SERVICE.md)")
+        with col3:
+            st.markdown("🔒 [プライバシーポリシー](https://github.com/ryuki4219/Fractal-Analyzer-V2/blob/main/PRIVACY_POLICY.md)")
+        with col4:
+            st.markdown("💻 [GitHubリポジトリ](https://github.com/ryuki4219/Fractal-Analyzer-V2)")
     
-    **本サービスは研究・教育目的のツールであり、医療診断を目的としたものではありません。**
-    
-    - 🔬 フラクタル幾何学の研究・学習用ツールです
-    - ❌ 医療診断・健康判定には使用しないでください
-    - ⚕️ 医療に関する判断は、必ず医療機関・医師にご相談ください
-    - 📊 解析結果は参考値としてご利用ください
-    
-    本サービスを利用することで、[利用規約](https://github.com/ryuki4219/Fractal-Analyzer-V2/blob/main/TERMS_OF_SERVICE.md)に同意したものとみなされます。
-    """)
-    
-    # ドキュメントへのリンク
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.markdown("📖 [使い方ガイド](https://github.com/ryuki4219/Fractal-Analyzer-V2/blob/main/USER_GUIDE.md)")
-    with col2:
-        st.markdown("📜 [利用規約](https://github.com/ryuki4219/Fractal-Analyzer-V2/blob/main/TERMS_OF_SERVICE.md)")
-    with col3:
-        st.markdown("🔒 [プライバシーポリシー](https://github.com/ryuki4219/Fractal-Analyzer-V2/blob/main/PRIVACY_POLICY.md)")
-    with col4:
-        st.markdown("💻 [GitHubリポジトリ](https://github.com/ryuki4219/Fractal-Analyzer-V2)")
-    
-    st.markdown("---")
-    
-    # システム情報
-    st.markdown("**システム情報:** CuPy が利用可能な場合は GPU を自動で使います。無ければ CPU (NumPy) で処理します。")
+    # システム情報もコンパクトに
+    with st.expander("ℹ️ システム情報", expanded=False):
+        st.info("CuPy が利用可能な場合は GPU を自動で使います。無ければ CPU (NumPy) で処理します。")
     
     # ============================================================
     # � 自動モデル読み込み機能 - アプリ起動時に実行（最初に実行）
@@ -3338,7 +3336,7 @@ def app():
                     
                     # 🆕 画像品質自動判定
                     if IMAGE_QUALITY_ASSESSOR_AVAILABLE:
-                        with st.expander("🔍 画像品質チェック", expanded=True):
+                        with st.expander("🔍 画像品質チェック", expanded=False):
                             st.markdown("""
                             **アップロードされた画像の品質を自動判定します**
                             - ✅ **高品質・推奨**: very_high / high 信頼度で解析可能
@@ -4603,7 +4601,7 @@ def app():
     st.header("🎓 学習モード - AIを学習させる")
     
     # 🎯 学習前の診断とアドバイス
-    with st.expander("💡 効果的な学習のためのガイド", expanded=True):
+    with st.expander("💡 効果的な学習のためのガイド", expanded=False):
         st.markdown("""
         ### 🎯 信頼度10%から75%以上を目指すために
         
@@ -4854,7 +4852,7 @@ def app():
                 high_files_for_pairs = high_files_all
                 
                 # デバッグ: 低画質ファイルパスも表示
-                with st.expander("🔍 ペア画像パス (デバッグ情報)", expanded=True):
+                with st.expander("🔍 ペア画像パス (デバッグ情報)", expanded=False):
                     st.write(f"**📁 指定フォルダ:** `{folder_path}`")
                     st.write(f"**📋 ファイルパターン:** `{file_pattern}`")
                     st.write(f"**📋 検出された全画像:** {len(all_files)}枚")
