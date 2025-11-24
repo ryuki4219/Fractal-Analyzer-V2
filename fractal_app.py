@@ -3786,32 +3786,53 @@ def app():
                                 st.markdown(f"---")
                                 st.markdown(f"### {idx+1}. {result['filename']}")
                                 
-                                col1, col2, col3 = st.columns(3)
-                                with col1:
-                                    st.metric(
-                                        "総合信頼度",
-                                        f"{conf['overall_confidence']:.1f}%",
-                                        delta=None
-                                    )
-                                with col2:
-                                    st.metric(
-                                        "特徴量品質",
-                                        f"{conf['feature_quality']:.1f}%"
-                                    )
-                                with col3:
-                                    st.metric(
-                                        "モデル信頼度",
-                                        f"{conf['model_confidence']:.1f}%"
-                                    )
-                                
-                                # 特徴量の詳細
-                                feat_details = conf['feature_details']
-                                st.write(f"""
-                                **特徴量の詳細:**
-                                - エッジ強度: {feat_details['edge_strength']:.2f} (スコア: {feat_details['edge_score']:.1f}/40)
-                                - ノイズレベル: {feat_details['noise_level']:.2f} (スコア: {feat_details['noise_score']:.1f}/30)
-                                - エントロピー: {feat_details['entropy']:.2f} (スコア: {feat_details['entropy_score']:.1f}/30)
-                                """)
+                                # 処理方法によって表示内容を変更
+                                if result['method'] == 'ai_prediction':
+                                    # AI予測の場合: 3つの指標を表示
+                                    col1, col2, col3 = st.columns(3)
+                                    with col1:
+                                        st.metric(
+                                            "総合信頼度",
+                                            f"{conf['overall_confidence']:.1f}%",
+                                            delta=None
+                                        )
+                                    with col2:
+                                        st.metric(
+                                            "特徴量品質",
+                                            f"{conf['feature_quality']:.1f}%"
+                                        )
+                                    with col3:
+                                        st.metric(
+                                            "モデル信頼度",
+                                            f"{conf['model_confidence']:.1f}%"
+                                        )
+                                    
+                                    # 特徴量の詳細
+                                    feat_details = conf['feature_details']
+                                    st.write(f"""
+                                    **特徴量の詳細:**
+                                    - エッジ強度: {feat_details['edge_strength']:.2f} (スコア: {feat_details['edge_score']:.1f}/40)
+                                    - ノイズレベル: {feat_details['noise_level']:.2f} (スコア: {feat_details['noise_score']:.1f}/30)
+                                    - エントロピー: {feat_details['entropy']:.2f} (スコア: {feat_details['entropy_score']:.1f}/30)
+                                    """)
+                                else:
+                                    # 直接解析の場合: 信頼度のみ表示
+                                    col1, col2 = st.columns(2)
+                                    with col1:
+                                        st.metric(
+                                            "信頼度",
+                                            f"{conf['overall_confidence']:.1f}%",
+                                            delta=None
+                                        )
+                                    with col2:
+                                        st.metric(
+                                            "信頼度レベル",
+                                            f"{conf['confidence_level']}"
+                                        )
+                                    
+                                    st.write(f"""
+                                    **推定範囲:** {conf['lower_bound']:.4f} - {conf['upper_bound']:.4f}
+                                    """)
                         
                         # 画像プレビュー (信頼度付き)
                         st.subheader("📷 画像プレビュー (上位3枚)")
