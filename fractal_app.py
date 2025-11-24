@@ -3866,26 +3866,38 @@ def app():
                                         key="show_least_squares_graph"
                                     )
                                     
-                                    if show_fitting_graph and result.get('fitting_data'):
-                                        fitting_data = result['fitting_data']
-                                        if fitting_data and fitting_data['log_h'] is not None:
-                                            st.markdown("#### 📊 最小二乗法フィッティング解析")
-                                            fig = plot_least_squares_fit(
-                                                fitting_data['log_h'],
-                                                fitting_data['log_Nh'],
-                                                fitting_data['coeffs'],
-                                                fd_value
-                                            )
-                                            st.pyplot(fig)
-                                            plt.close(fig)
-                                            
-                                            st.caption("""
-                                            **グラフの見方:**
-                                            - 青い点: 実際の測定データ (log(スケール) vs log(ボックス数))
-                                            - 赤い線: 最小二乗法によるフィッティング直線
-                                            - 傾きの絶対値がフラクタル次元(FD)値になります
-                                            - R²値が1に近いほど、フィッティングの精度が高いことを示します
-                                            """)
+                                    if show_fitting_graph:
+                                        # デバッグ情報
+                                        if 'fitting_data' not in result:
+                                            st.warning("⚠️ この画像はAI予測で処理されたため、最小二乗法のデータがありません。")
+                                            st.info("💡 直接解析（高品質画像またはlow1-3画像）のみグラフを表示できます。")
+                                        elif result.get('fitting_data') is None:
+                                            st.warning("⚠️ フィッティングデータが取得できませんでした。")
+                                        else:
+                                            fitting_data = result['fitting_data']
+                                            if fitting_data.get('log_h') is None:
+                                                st.warning("⚠️ 計算データが不完全です。")
+                                            else:
+                                                st.markdown("#### 📊 最小二乗法フィッティング解析")
+                                                try:
+                                                    fig = plot_least_squares_fit(
+                                                        fitting_data['log_h'],
+                                                        fitting_data['log_Nh'],
+                                                        fitting_data['coeffs'],
+                                                        fd_value
+                                                    )
+                                                    st.pyplot(fig)
+                                                    plt.close(fig)
+                                                    
+                                                    st.caption("""
+                                                    **グラフの見方:**
+                                                    - 青い点: 実際の測定データ (log(スケール) vs log(ボックス数))
+                                                    - 赤い線: 最小二乗法によるフィッティング直線
+                                                    - 傾きの絶対値がフラクタル次元(FD)値になります
+                                                    - R²値が1に近いほど、フィッティングの精度が高いことを示します
+                                                    """)
+                                                except Exception as e:
+                                                    st.error(f"❌ グラフ描画エラー: {str(e)}")
                                     
                                     st.markdown("#### 💭 解釈")
                                     st.info(single_eval['interpretation'])
