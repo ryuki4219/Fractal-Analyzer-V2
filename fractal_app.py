@@ -50,6 +50,35 @@ except ImportError:
     IMAGE_QUALITY_ASSESSOR_AVAILABLE = False
     print("Warning: image_quality_assessor.py not found. Image quality assessment will be disabled.")
 
+# 肌分析モジュールをインポート
+try:
+    from skin_analysis import (
+        detect_face_landmarks,
+        extract_face_regions,
+        detect_skin_troubles,
+        create_trouble_report,
+        REGION_NAMES_JP,
+        TROUBLE_NAMES_JP
+    )
+    SKIN_ANALYSIS_AVAILABLE = True
+except ImportError:
+    SKIN_ANALYSIS_AVAILABLE = False
+    print("Warning: skin_analysis.py not found. Face region analysis will be disabled.")
+
+# 実験データ分析モジュールをインポート
+try:
+    from experiment_analysis import (
+        ExperimentDataManager,
+        calculate_correlations,
+        create_scatter_plot,
+        create_correlation_heatmap,
+        generate_experiment_summary
+    )
+    EXPERIMENT_ANALYSIS_AVAILABLE = True
+except ImportError:
+    EXPERIMENT_ANALYSIS_AVAILABLE = False
+    print("Warning: experiment_analysis.py not found. Experimental data collection will be disabled.")
+
 # Try import cupy for GPU acceleration (optional)
 USE_CUPY = False
 xp = np  # alias for numpy/cupy
@@ -561,6 +590,11 @@ def plot_least_squares_fit(log_h, log_Nh, coeffs, fd_value):
     Returns:
         matplotlib figure
     """
+    # 日本語フォント設定(文字化け対策)
+    import matplotlib
+    matplotlib.rcParams['font.family'] = ['MS Gothic', 'Yu Gothic', 'Meiryo', 'sans-serif']
+    matplotlib.rcParams['axes.unicode_minus'] = False
+    
     fig, ax = plt.subplots(figsize=(10, 6))
     
     # 実測値をプロット
@@ -3256,10 +3290,13 @@ def app():
         [
             "🔮 推論モード (低画質画像のみで予測)",
             "🎓 学習モード (画像ペアが必要)", 
-            "📊 研究報告・品質ガイド"
+            "📊 研究報告・品質ガイド",
+            "🌸 顔全体分析モード",
+            "🔬 実験データ収集",
+            "📈 相関分析"
         ],
         index=0,  # デフォルトを推論モードに設定
-        help="推論モード: 学習済みモデルで低画質画像から予測（メイン機能）\n学習モード: 高画質+低画質ペアでAIを学習\n研究報告: 品質最適化研究の結果と実用ガイド"
+        help="推論モード: 学習済みモデルで低画質画像から予測（メイン機能）\n学習モード: 高画質+低画質ペアでAIを学習\n研究報告: 品質最適化研究の結果と実用ガイド\n顔全体分析: 顔の各部位を自動検出して分析\n実験データ収集: 肌状態とFDの相関実験用データ収集\n相関分析: 収集したデータの統計分析"
     )
     
     st.sidebar.markdown("---")
@@ -5944,6 +5981,277 @@ def app():
 
     else:
         st.info("📁 フォルダモード: フォルダパスを入力すると自動的に画像ペアを検出します\n📤 手動モード: 高画質と低画質のペア画像を同数アップロードしてください")
+
+    # ============================================================
+    # 🌸 顔全体分析モード
+    # ============================================================
+    elif app_mode == "🌸 顔全体分析モード":
+        st.header("🌸 顔全体フラクタル分析 - 部位別肌評価")
+        
+        if not SKIN_ANALYSIS_AVAILABLE:
+            st.error("""
+            ❌ **顔分析機能が利用できません**
+            
+            `skin_analysis.py`モジュールが見つかりません。
+            または`mediapipe`がインストールされていません。
+            
+            以下のコマンドでインストールしてください:
+            ```
+            pip install mediapipe
+            ```
+            """)
+            return
+        
+        st.markdown("""
+        ### 📸 顔全体を撮影して、各部位を自動分析
+        
+        **このモードでできること:**
+        - 🎯 顔の自動検出と部位分割（額、頬、鼻、口周り、顎など）
+        - 📊 各部位のフラクタル次元（肌のキメ細かさ）
+        - 🔍 7種類の肌トラブル検出
+          * 毛穴の目立ち
+          * シワ
+          * 色ムラ・くすみ
+          * ニキビ・赤み
+          * クマ（目の下）
+          * テカリ
+          * キメの粗さ
+        - 🗺️ ヒートマップによる可視化
+        - 📋 部位別レポート生成
+        
+        **撮影のコツ:**
+        - 正面から顔全体が写るように撮影
+        - 自然光または明るい室内で
+        - 距離は約30-50cm
+        - 無表情で
+        """)
+        
+        uploaded_file = st.file_uploader(
+            "顔写真をアップロード",
+            type=['jpg', 'jpeg', 'png'],
+            help="顔全体が写った画像をアップロードしてください"
+        )
+        
+        if uploaded_file:
+            # 画像読み込み
+            image = read_bgr_from_buffer(uploaded_file.read())
+            
+            if image is None:
+                st.error("画像の読み込みに失敗しました")
+                return
+            
+            with st.spinner("🔍 顔を検出中..."):
+                landmarks = detect_face_landmarks(image)
+            
+            if landmarks is None:
+                st.error("""
+                ❌ **顔が検出できませんでした**
+                
+                以下を確認してください:
+                - 顔全体が写っているか
+                - 顔が正面を向いているか
+                - 画像が明るいか
+                - 顔が大きすぎたり小さすぎたりしないか
+                """)
+                return
+            
+            st.success("✅ 顔を検出しました！")
+            
+            # 各部位を抽出
+            with st.spinner("📐 部位を分割中..."):
+                regions = extract_face_regions(image, landmarks)
+            
+            if not regions:
+                st.error("部位の抽出に失敗しました")
+                return
+            
+            st.success(f"✅ {len(regions)}つの部位を検出しました")
+            
+            # タブ表示
+            tab1, tab2, tab3, tab4 = st.tabs([
+                "📊 総合評価",
+                "🗺️ 部位表示",
+                "🔍 詳細分析",
+                "📋 レポート"
+            ])
+            
+            # 部位別にFD計算と肌トラブル検出
+            fd_results = {}
+            trouble_results = {}
+            
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            
+            for idx, (region_name, region_data) in enumerate(regions.items()):
+                status_text.text(f"解析中: {REGION_NAMES_JP.get(region_name, region_name)}")
+                
+                region_img = region_data['image']
+                
+                if region_img is not None and region_img.size > 0:
+                    # FD計算
+                    fd_result = calculate_fractal_dimension(region_img)
+                    fd_results[region_name] = fd_result['fd']
+                    
+                    # 肌トラブル検出
+                    troubles = detect_skin_troubles(region_img, region_name)
+                    # FD値をキメの粗さスコアに反映
+                    if 'texture_roughness' in troubles:
+                        fd_score = min((fd_result['fd'] - 2.0) / 1.0 * 100, 100)
+                        troubles['texture_roughness']['score'] = fd_score
+                        troubles['texture_roughness']['level'] = (
+                            '高' if fd_score > 65 else '中' if fd_score > 35 else '低'
+                        )
+                    
+                    trouble_results[region_name] = troubles
+                
+                progress_bar.progress((idx + 1) / len(regions))
+            
+            progress_bar.empty()
+            status_text.empty()
+            
+            # 総合スコア計算
+            if fd_results:
+                # FDを100点満点スコアに変換（2.0=100点, 3.0=0点）
+                scores = {}
+                for region, fd in fd_results.items():
+                    score = (3.0 - fd) / 1.0 * 100
+                    scores[region] = max(0, min(100, score))
+                
+                # 重み付き平均（顔の重要部位を重視）
+                weights = {
+                    'forehead': 0.12,
+                    'left_cheek': 0.22,
+                    'right_cheek': 0.22,
+                    'nose': 0.10,
+                    'mouth_area': 0.14,
+                    'chin': 0.10,
+                    'left_under_eye': 0.05,
+                    'right_under_eye': 0.05
+                }
+                
+                overall_score = sum(
+                    scores.get(region, 0) * weight
+                    for region, weight in weights.items()
+                )
+                
+                # グレード判定
+                if overall_score >= 85:
+                    grade = 'S (非常に良い)'
+                    grade_emoji = '🌟'
+                elif overall_score >= 70:
+                    grade = 'A (良い)'
+                    grade_emoji = '⭐'
+                elif overall_score >= 55:
+                    grade = 'B (普通)'
+                    grade_emoji = '🔵'
+                elif overall_score >= 40:
+                    grade = 'C (やや粗い)'
+                    grade_emoji = '🟡'
+                else:
+                    grade = 'D (要ケア)'
+                    grade_emoji = '🔴'
+            
+            # Tab 1: 総合評価
+            with tab1:
+                st.subheader("📊 総合評価")
+                
+                col1, col2, col3 = st.columns([2, 2, 3])
+                
+                with col1:
+                    st.markdown("### 元画像")
+                    st.image(cv2.cvtColor(image, cv2.COLOR_BGR2RGB), 
+                            use_container_width=True)
+                
+                with col2:
+                    st.markdown("### スコア")
+                    st.metric(
+                        "総合スコア",
+                        f"{overall_score:.1f}/100",
+                        delta=None
+                    )
+                    st.markdown(f"### {grade_emoji} グレード")
+                    st.markdown(f"## {grade}")
+                
+                with col3:
+                    st.markdown("### 部位別スコア")
+                    for region, score in sorted(scores.items(), key=lambda x: x[1], reverse=True):
+                        region_jp = REGION_NAMES_JP.get(region, region)
+                        st.progress(score / 100)
+                        st.caption(f"{region_jp}: {score:.1f}点")
+            
+            # Tab 2: 部位表示
+            with tab2:
+                st.subheader("🗺️ 検出された部位")
+                
+                # 部位を2列で表示
+                cols_per_row = 3
+                region_items = list(regions.items())
+                
+                for i in range(0, len(region_items), cols_per_row):
+                    cols = st.columns(cols_per_row)
+                    for j, col in enumerate(cols):
+                        idx = i + j
+                        if idx < len(region_items):
+                            region_name, region_data = region_items[idx]
+                            region_img = region_data['image']
+                            
+                            with col:
+                                region_jp = REGION_NAMES_JP.get(region_name, region_name)
+                                if region_img is not None and region_img.size > 0:
+                                    st.image(
+                                        cv2.cvtColor(region_img, cv2.COLOR_BGR2RGB),
+                                        caption=f"{region_jp}",
+                                        use_container_width=True
+                                    )
+                                    if region_name in fd_results:
+                                        st.caption(f"FD: {fd_results[region_name]:.4f}")
+                                        st.caption(f"スコア: {scores.get(region_name, 0):.1f}点")
+            
+            # Tab 3: 詳細分析
+            with tab3:
+                st.subheader("🔍 部位別詳細分析")
+                
+                for region_name in regions.keys():
+                    region_jp = REGION_NAMES_JP.get(region_name, region_name)
+                    
+                    with st.expander(f"📍 {region_jp}"):
+                        if region_name in fd_results:
+                            col1, col2 = st.columns([1, 2])
+                            
+                            with col1:
+                                st.metric("フラクタル次元", f"{fd_results[region_name]:.4f}")
+                                st.metric("スコア", f"{scores.get(region_name, 0):.1f}/100")
+                            
+                            with col2:
+                                if region_name in trouble_results:
+                                    troubles = trouble_results[region_name]
+                                    
+                                    st.markdown("**検出された肌トラブル:**")
+                                    for trouble_key, trouble_data in troubles.items():
+                                        trouble_jp = TROUBLE_NAMES_JP.get(trouble_key, trouble_key)
+                                        level = trouble_data.get('level', '不明')
+                                        score_val = trouble_data.get('score', 0)
+                                        
+                                        level_emoji = '🔴' if level == '高' else '🟡' if level == '中' else '🟢'
+                                        st.write(f"{level_emoji} **{trouble_jp}**: {level} ({score_val:.1f})")
+            
+            # Tab 4: レポート
+            with tab4:
+                st.subheader("📋 総合レポート")
+                
+                report = create_trouble_report(trouble_results, fd_results)
+                st.markdown(report)
+                
+                # レポートダウンロード
+                timestamp = pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')
+                report_filename = f"skin_analysis_report_{timestamp}.md"
+                
+                st.download_button(
+                    label="📥 レポートをダウンロード",
+                    data=report,
+                    file_name=report_filename,
+                    mime="text/markdown"
+                )
 
 if __name__ == "__main__":
     app()
