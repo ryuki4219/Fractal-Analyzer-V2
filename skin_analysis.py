@@ -26,8 +26,8 @@ def get_face_mesh():
                 static_image_mode=True,
                 max_num_faces=1,
                 refine_landmarks=True,
-                min_detection_confidence=0.3,  # 信頼度を下げて検出しやすく
-                min_tracking_confidence=0.3
+                min_detection_confidence=0.2,  # さらに下げて検出しやすく
+                min_tracking_confidence=0.2
             )
         except ImportError:
             return None
@@ -39,7 +39,7 @@ def detect_face_landmarks(image):
     顔のランドマークを検出
     
     Args:
-        image: BGR画像
+        image: BGR画像（元画像は変更しない）
     
     Returns:
         landmarks: 顔のランドマーク（478点）、検出失敗時はNone
@@ -48,41 +48,57 @@ def detect_face_landmarks(image):
     if face_mesh is None:
         return None
     
-    # 画像サイズの確認と調整
-    h, w = image.shape[:2]
+    # 画像をコピー（元画像を変更しない）
+    img = image.copy()
+    h, w = img.shape[:2]
     
-    # 画像が小さすぎる場合はリサイズ
-    if w < 640 or h < 480:
-        scale = max(640 / w, 480 / h)
+    # 画像サイズの正規化（MediaPipeは特定サイズで最適化されている）
+    target_size = 1024
+    if max(w, h) > target_size:
+        scale = target_size / max(w, h)
         new_w = int(w * scale)
         new_h = int(h * scale)
-        image = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
-    
-    # 画像が大きすぎる場合もリサイズ（処理速度向上）
-    elif w > 1920 or h > 1080:
-        scale = min(1920 / w, 1080 / h)
+        img = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
+    elif max(w, h) < 480:
+        scale = 480 / max(w, h)
         new_w = int(w * scale)
         new_h = int(h * scale)
-        image = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_AREA)
+        img = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
     
     # BGR→RGB変換
-    rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    rgb_image = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
     
-    # コントラスト調整（顔検出を改善）
-    lab = cv2.cvtColor(rgb_image, cv2.COLOR_RGB2LAB)
-    l, a, b = cv2.split(lab)
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    l = clahe.apply(l)
-    enhanced = cv2.merge([l, a, b])
-    rgb_image = cv2.cvtColor(enhanced, cv2.COLOR_LAB2RGB)
-    
-    # 顔検出
+    # 1回目の検出試行
     results = face_mesh.process(rgb_image)
     
-    if not results.multi_face_landmarks:
-        return None
+    if results.multi_face_landmarks:
+        return results.multi_face_landmarks[0]
     
-    return results.multi_face_landmarks[0]
+    # 検出失敗時：コントラスト強調して再試行
+    lab = cv2.cvtColor(rgb_image, cv2.COLOR_RGB2LAB)
+    l, a, b = cv2.split(lab)
+    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+    l = clahe.apply(l)
+    enhanced = cv2.merge([l, a, b])
+    rgb_enhanced = cv2.cvtColor(enhanced, cv2.COLOR_LAB2RGB)
+    
+    results = face_mesh.process(rgb_enhanced)
+    
+    if results.multi_face_landmarks:
+        return results.multi_face_landmarks[0]
+    
+    # 2回目も失敗：ガンマ補正して再試行
+    gamma = 1.5
+    inv_gamma = 1.0 / gamma
+    table = np.array([((i / 255.0) ** inv_gamma) * 255 for i in np.arange(0, 256)]).astype("uint8")
+    rgb_gamma = cv2.LUT(rgb_image, table)
+    
+    results = face_mesh.process(rgb_gamma)
+    
+    if results.multi_face_landmarks:
+        return results.multi_face_landmarks[0]
+    
+    return None
 
 
 def extract_face_regions(image, landmarks):
