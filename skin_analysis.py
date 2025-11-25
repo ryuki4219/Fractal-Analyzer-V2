@@ -2,6 +2,7 @@
 """
 肌分析モジュール
 顔検出、部位分割、肌トラブル検出機能を提供
+Python 3.13対応版 - OpenCV + dlib(オプション)
 """
 
 import cv2
@@ -9,15 +10,31 @@ import numpy as np
 from typing import Dict, List, Tuple, Optional
 import matplotlib.pyplot as plt
 import matplotlib
+import os
 matplotlib.rcParams['font.family'] = ['MS Gothic', 'Yu Gothic', 'Meiryo', 'sans-serif']
 matplotlib.rcParams['axes.unicode_minus'] = False
 
-# MediaPipe Face Meshの初期化（遅延ロード）
+# 検出器の初期化（遅延ロード）
 _face_mesh = None
+_face_cascade = None
+_dlib_detector = None
+_dlib_predictor = None
+_mediapipe_available = False
 
-def get_face_mesh():
-    """MediaPipe Face Meshのシングルトンインスタンスを取得"""
-    global _face_mesh
+def _init_face_detectors():
+    """顔検出器を初期化"""
+    global _face_cascade, _dlib_detector, _dlib_predictor, _mediapipe_available, _face_mesh
+    
+    # OpenCV Haar Cascade（必ず動く）
+    if _face_cascade is None:
+        cascade_path = cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
+        if os.path.exists(cascade_path):
+            _face_cascade = cv2.CascadeClassifier(cascade_path)
+        else:
+            # 代替パス
+            _face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_alt2.xml')
+    
+    # MediaPipe（Python 3.12以下のみ）
     if _face_mesh is None:
         try:
             import mediapipe as mp
@@ -26,94 +43,253 @@ def get_face_mesh():
                 static_image_mode=True,
                 max_num_faces=1,
                 refine_landmarks=True,
-                min_detection_confidence=0.2,  # さらに下げて検出しやすく
-                min_tracking_confidence=0.2
+                min_detection_confidence=0.1,
+                min_tracking_confidence=0.1
             )
+            _mediapipe_available = True
+            print("MediaPipe初期化成功")
         except ImportError:
-            return None
-    return _face_mesh
+            _mediapipe_available = False
+            print("MediaPipe利用不可 - OpenCVベースの検出を使用")
+    
+    # dlib（オプション）
+    if _dlib_detector is None:
+        try:
+            import dlib
+            _dlib_detector = dlib.get_frontal_face_detector()
+            # 68点ランドマーク予測器（存在すれば）
+            predictor_path = "shape_predictor_68_face_landmarks.dat"
+            if os.path.exists(predictor_path):
+                _dlib_predictor = dlib.shape_predictor(predictor_path)
+        except ImportError:
+            pass
+
+
+def get_face_mesh():
+    """MediaPipe Face Meshのシングルトンインスタンスを取得"""
+    global _face_mesh, _mediapipe_available
+    _init_face_detectors()
+    return _face_mesh if _mediapipe_available else None
+
+
+def get_face_cascade():
+    """OpenCV Haar Cascade顔検出器を取得"""
+    global _face_cascade
+    _init_face_detectors()
+    return _face_cascade
+
+
+def detect_face_opencv(image):
+    """
+    OpenCVを使用して顔を検出し、顔領域の矩形を返す
+    
+    Returns:
+        (x, y, w, h) or None
+    """
+    _init_face_detectors()
+    
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    
+    # 複数の前処理を試行
+    preprocessing_methods = [
+        ("original", gray),
+        ("clahe", cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(gray)),
+        ("equalized", cv2.equalizeHist(gray)),
+    ]
+    
+    for method_name, processed_gray in preprocessing_methods:
+        if _face_cascade is not None and not _face_cascade.empty():
+            faces = _face_cascade.detectMultiScale(
+                processed_gray,
+                scaleFactor=1.05,
+                minNeighbors=3,
+                minSize=(80, 80),
+                flags=cv2.CASCADE_SCALE_IMAGE
+            )
+            if len(faces) > 0:
+                # 最大の顔を選択
+                x, y, w, h = max(faces, key=lambda f: f[2] * f[3])
+                print(f"OpenCV Haar Cascade ({method_name})で顔検出成功")
+                return (x, y, w, h)
+    
+    # dlibを試行
+    if _dlib_detector is not None:
+        try:
+            faces = _dlib_detector(gray, 1)
+            if len(faces) > 0:
+                face = max(faces, key=lambda r: r.width() * r.height())
+                x, y = face.left(), face.top()
+                w, h = face.width(), face.height()
+                print("dlibで顔検出成功")
+                return (x, y, w, h)
+        except:
+            pass
+    
+    return None
 
 
 def detect_face_landmarks(image):
     """
     顔のランドマークを検出
+    MediaPipeが利用可能なら478点、そうでなければ簡易的な顔領域情報を返す
     
     Args:
-        image: BGR画像（元画像は変更しない）
+        image: BGR画像
     
     Returns:
-        landmarks: 顔のランドマーク（478点）、検出失敗時はNone
+        landmarks: MediaPipeランドマーク、または簡易FaceRegionオブジェクト、失敗時はNone
     """
-    face_mesh = get_face_mesh()
-    if face_mesh is None:
-        return None
+    _init_face_detectors()
     
-    # 画像をコピー（元画像を変更しない）
-    img = image.copy()
-    h, w = img.shape[:2]
+    original = image.copy()
+    h, w = original.shape[:2]
     
-    # 画像サイズの正規化（MediaPipeは特定サイズで最適化されている）
-    target_size = 1024
-    if max(w, h) > target_size:
-        scale = target_size / max(w, h)
+    # MediaPipeが利用可能な場合
+    if _mediapipe_available and _face_mesh is not None:
+        preprocessing_methods = [
+            ("original", lambda img: img),
+            ("clahe", apply_clahe),
+            ("gamma_bright", lambda img: apply_gamma(img, 1.5)),
+            ("gamma_dark", lambda img: apply_gamma(img, 0.7)),
+            ("histogram_eq", apply_histogram_equalization),
+        ]
+        
+        for method_name, preprocess_func in preprocessing_methods:
+            try:
+                processed = preprocess_func(original.copy())
+                img = normalize_image_size(processed)
+                rgb_image = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                
+                results = _face_mesh.process(rgb_image)
+                
+                if results.multi_face_landmarks:
+                    print(f"MediaPipe ({method_name})で顔検出成功")
+                    return results.multi_face_landmarks[0]
+            except Exception as e:
+                continue
+    
+    # OpenCVベースのフォールバック
+    face_rect = detect_face_opencv(original)
+    if face_rect is not None:
+        # 簡易的なFaceRegionオブジェクトを作成
+        return SimpleFaceRegion(face_rect, (w, h))
+    
+    return None
+
+
+class SimpleFaceRegion:
+    """OpenCVで検出した顔領域を表すシンプルなクラス"""
+    
+    def __init__(self, face_rect, image_size):
+        """
+        Args:
+            face_rect: (x, y, w, h) 顔の矩形
+            image_size: (width, height) 画像サイズ
+        """
+        self.face_rect = face_rect
+        self.image_size = image_size
+        self.is_simple = True  # MediaPipeではないことを示すフラグ
+        
+        # 仮想的なランドマークを生成
+        self.landmark = self._generate_virtual_landmarks()
+    
+    def _generate_virtual_landmarks(self):
+        """顔の矩形から仮想的なランドマークを生成"""
+        x, y, w, h = self.face_rect
+        img_w, img_h = self.image_size
+        
+        # 正規化座標で仮想ランドマークを生成（478点に近似）
+        landmarks = []
+        
+        # 顔の各部位の相対位置（経験的な比率）
+        # 額: 上部15-35%
+        # 目: 35-45%
+        # 鼻: 45-70%
+        # 口: 70-85%
+        # 顎: 85-100%
+        
+        for i in range(478):
+            # 簡略化のため、顔の矩形内にランダムに点を配置
+            # 実際には各部位の典型的な位置に基づいて配置
+            rel_x = (i % 22) / 22.0  # 0-1の範囲
+            rel_y = (i // 22) / 22.0
+            
+            norm_x = (x + w * rel_x) / img_w
+            norm_y = (y + h * rel_y) / img_h
+            
+            landmarks.append(VirtualLandmark(norm_x, norm_y))
+        
+        return landmarks
+
+
+class VirtualLandmark:
+    """仮想的なランドマーク点"""
+    def __init__(self, x, y):
+        self.x = x
+        self.y = y
+
+
+def normalize_image_size(image, target_max=1024, target_min=480):
+    """画像サイズを正規化"""
+    h, w = image.shape[:2]
+    
+    if max(w, h) > target_max:
+        scale = target_max / max(w, h)
         new_w = int(w * scale)
         new_h = int(h * scale)
-        img = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
-    elif max(w, h) < 480:
-        scale = 480 / max(w, h)
+        return cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_AREA)
+    elif max(w, h) < target_min:
+        scale = target_min / max(w, h)
         new_w = int(w * scale)
         new_h = int(h * scale)
-        img = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
-    
-    # BGR→RGB変換
-    rgb_image = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    
-    # 1回目の検出試行
-    results = face_mesh.process(rgb_image)
-    
-    if results.multi_face_landmarks:
-        return results.multi_face_landmarks[0]
-    
-    # 検出失敗時：コントラスト強調して再試行
-    lab = cv2.cvtColor(rgb_image, cv2.COLOR_RGB2LAB)
+        return cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
+    return image
+
+
+def apply_clahe(image):
+    """CLAHEコントラスト強調"""
+    lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
     l, a, b = cv2.split(lab)
     clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
     l = clahe.apply(l)
     enhanced = cv2.merge([l, a, b])
-    rgb_enhanced = cv2.cvtColor(enhanced, cv2.COLOR_LAB2RGB)
-    
-    results = face_mesh.process(rgb_enhanced)
-    
-    if results.multi_face_landmarks:
-        return results.multi_face_landmarks[0]
-    
-    # 2回目も失敗：ガンマ補正して再試行
-    gamma = 1.5
+    return cv2.cvtColor(enhanced, cv2.COLOR_LAB2BGR)
+
+
+def apply_gamma(image, gamma):
+    """ガンマ補正"""
     inv_gamma = 1.0 / gamma
     table = np.array([((i / 255.0) ** inv_gamma) * 255 for i in np.arange(0, 256)]).astype("uint8")
-    rgb_gamma = cv2.LUT(rgb_image, table)
-    
-    results = face_mesh.process(rgb_gamma)
-    
-    if results.multi_face_landmarks:
-        return results.multi_face_landmarks[0]
-    
-    return None
+    return cv2.LUT(image, table)
+
+
+def apply_histogram_equalization(image):
+    """ヒストグラム均一化"""
+    img_yuv = cv2.cvtColor(image, cv2.COLOR_BGR2YUV)
+    img_yuv[:, :, 0] = cv2.equalizeHist(img_yuv[:, :, 0])
+    return cv2.cvtColor(img_yuv, cv2.COLOR_YUV2BGR)
 
 
 def extract_face_regions(image, landmarks):
     """
     顔画像から各部位を抽出
+    MediaPipeランドマークまたはSimpleFaceRegion（OpenCVベース）に対応
     
     Args:
         image: BGR画像
-        landmarks: MediaPipeの顔ランドマーク
+        landmarks: MediaPipeの顔ランドマーク または SimpleFaceRegion
     
     Returns:
         dict: 各部位の画像と座標 {region_name: {'image': img, 'bbox': (x, y, w, h)}}
     """
     h, w = image.shape[:2]
+    regions = {}
     
+    # SimpleFaceRegion（OpenCVベース）の場合は、顔の矩形から部位を推定
+    if hasattr(landmarks, 'is_simple') and landmarks.is_simple:
+        return extract_face_regions_from_rect(image, landmarks.face_rect)
+    
+    # MediaPipeランドマークの場合
     # ランドマークを画像座標に変換
     points = []
     for landmark in landmarks.landmark:
@@ -121,8 +297,6 @@ def extract_face_regions(image, landmarks):
         y = int(landmark.y * h)
         points.append((x, y))
     points = np.array(points)
-    
-    regions = {}
     
     # 額（おでこ）: 顔上部
     forehead_indices = [10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 
@@ -219,6 +393,116 @@ def extract_face_regions(image, landmarks):
         regions['right_under_eye'] = {
             'image': image[y:y+h_region, x:x+w_region],
             'bbox': (x, y, w_region, h_region)
+        }
+    
+    return regions
+
+
+def extract_face_regions_from_rect(image, face_rect):
+    """
+    顔の矩形から各部位を推定して抽出（OpenCVフォールバック用）
+    顔の一般的な比率に基づいて部位を推定
+    
+    Args:
+        image: BGR画像
+        face_rect: (x, y, w, h) 顔の矩形
+    
+    Returns:
+        dict: 各部位の画像と座標
+    """
+    h, w = image.shape[:2]
+    fx, fy, fw, fh = face_rect
+    
+    regions = {}
+    
+    # 顔の比率に基づいて部位を推定
+    # 額: 顔の上部 0-25%
+    forehead_y1 = fy
+    forehead_y2 = fy + int(fh * 0.25)
+    forehead_x1 = fx + int(fw * 0.15)
+    forehead_x2 = fx + int(fw * 0.85)
+    if forehead_y2 > forehead_y1 and forehead_x2 > forehead_x1:
+        regions['forehead'] = {
+            'image': image[forehead_y1:forehead_y2, forehead_x1:forehead_x2],
+            'bbox': (forehead_x1, forehead_y1, forehead_x2-forehead_x1, forehead_y2-forehead_y1)
+        }
+    
+    # 左頬: 顔の左側 35-65%の高さ、5-35%の幅
+    lc_y1 = fy + int(fh * 0.35)
+    lc_y2 = fy + int(fh * 0.70)
+    lc_x1 = fx + int(fw * 0.05)
+    lc_x2 = fx + int(fw * 0.35)
+    if lc_y2 > lc_y1 and lc_x2 > lc_x1:
+        regions['left_cheek'] = {
+            'image': image[lc_y1:lc_y2, lc_x1:lc_x2],
+            'bbox': (lc_x1, lc_y1, lc_x2-lc_x1, lc_y2-lc_y1)
+        }
+    
+    # 右頬: 顔の右側 35-65%の高さ、65-95%の幅
+    rc_y1 = fy + int(fh * 0.35)
+    rc_y2 = fy + int(fh * 0.70)
+    rc_x1 = fx + int(fw * 0.65)
+    rc_x2 = fx + int(fw * 0.95)
+    if rc_y2 > rc_y1 and rc_x2 > rc_x1:
+        regions['right_cheek'] = {
+            'image': image[rc_y1:rc_y2, rc_x1:rc_x2],
+            'bbox': (rc_x1, rc_y1, rc_x2-rc_x1, rc_y2-rc_y1)
+        }
+    
+    # 鼻: 顔の中央 30-65%の高さ、35-65%の幅
+    nose_y1 = fy + int(fh * 0.30)
+    nose_y2 = fy + int(fh * 0.65)
+    nose_x1 = fx + int(fw * 0.35)
+    nose_x2 = fx + int(fw * 0.65)
+    if nose_y2 > nose_y1 and nose_x2 > nose_x1:
+        regions['nose'] = {
+            'image': image[nose_y1:nose_y2, nose_x1:nose_x2],
+            'bbox': (nose_x1, nose_y1, nose_x2-nose_x1, nose_y2-nose_y1)
+        }
+    
+    # 口周り: 顔の下部中央 65-85%の高さ、25-75%の幅
+    mouth_y1 = fy + int(fh * 0.65)
+    mouth_y2 = fy + int(fh * 0.85)
+    mouth_x1 = fx + int(fw * 0.25)
+    mouth_x2 = fx + int(fw * 0.75)
+    if mouth_y2 > mouth_y1 and mouth_x2 > mouth_x1:
+        regions['mouth_area'] = {
+            'image': image[mouth_y1:mouth_y2, mouth_x1:mouth_x2],
+            'bbox': (mouth_x1, mouth_y1, mouth_x2-mouth_x1, mouth_y2-mouth_y1)
+        }
+    
+    # 顎: 顔の最下部 80-100%の高さ、20-80%の幅
+    chin_y1 = fy + int(fh * 0.80)
+    chin_y2 = fy + fh
+    chin_x1 = fx + int(fw * 0.20)
+    chin_x2 = fx + int(fw * 0.80)
+    if chin_y2 > chin_y1 and chin_x2 > chin_x1:
+        regions['chin'] = {
+            'image': image[chin_y1:chin_y2, chin_x1:chin_x2],
+            'bbox': (chin_x1, chin_y1, chin_x2-chin_x1, chin_y2-chin_y1)
+        }
+    
+    # 左目の下（クマの部分）: 42-55%の高さ、15-40%の幅
+    # 目は約25-35%の高さにあり、その下のクマ・たるみ部分
+    lue_y1 = fy + int(fh * 0.42)
+    lue_y2 = fy + int(fh * 0.55)
+    lue_x1 = fx + int(fw * 0.12)
+    lue_x2 = fx + int(fw * 0.42)
+    if lue_y2 > lue_y1 and lue_x2 > lue_x1:
+        regions['left_under_eye'] = {
+            'image': image[lue_y1:lue_y2, lue_x1:lue_x2],
+            'bbox': (lue_x1, lue_y1, lue_x2-lue_x1, lue_y2-lue_y1)
+        }
+    
+    # 右目の下（クマの部分）: 42-55%の高さ、60-88%の幅
+    rue_y1 = fy + int(fh * 0.42)
+    rue_y2 = fy + int(fh * 0.55)
+    rue_x1 = fx + int(fw * 0.58)
+    rue_x2 = fx + int(fw * 0.88)
+    if rue_y2 > rue_y1 and rue_x2 > rue_x1:
+        regions['right_under_eye'] = {
+            'image': image[rue_y1:rue_y2, rue_x1:rue_x2],
+            'bbox': (rue_x1, rue_y1, rue_x2-rue_x1, rue_y2-rue_y1)
         }
     
     return regions

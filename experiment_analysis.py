@@ -99,21 +99,30 @@ def calculate_correlations(df: pd.DataFrame) -> Dict:
     
     # FD値と相関を計算する項目
     correlation_items = {
-        'roughness_score': '肌荒れ度',
-        'dryness_score': '乾燥度',
+        # 主観評価スコア
+        'roughness_score': '肌荒れ度（主観）',
+        'dryness_score': '乾燥度（主観）',
         'moisture_level': '水分量',
         'sebum_level': '皮脂量',
-        'pore_score': '毛穴',
-        'wrinkle_score': 'シワ',
-        'redness_score': '赤み',
-        'dark_circle_score': 'クマ',
-        'age': '年齢'
+        'pore_score': '毛穴（主観）',
+        'wrinkle_score': 'シワ（主観）',
+        'redness_score': '赤み（主観）',
+        'dark_circle_score': 'クマ（主観）',
+        'age': '年齢',
+        # 自動検出肌トラブルスコア（画像解析結果）
+        'trouble_pore_visibility': '毛穴の目立ち（自動検出）',
+        'trouble_wrinkles': 'シワ（自動検出）',
+        'trouble_color_unevenness': '色ムラ・くすみ（自動検出）',
+        'trouble_redness_acne': 'ニキビ・赤み（自動検出）',
+        'trouble_dark_circles': 'クマ（自動検出）',
+        'trouble_oiliness': 'テカリ（自動検出）',
+        'trouble_total_score': '肌トラブル総合スコア（自動検出）'
     }
     
     for col, name_jp in correlation_items.items():
         if col in df.columns:
             # 欠損値を除外
-            valid_data = df[[' average_fd', col]].dropna()
+            valid_data = df[['average_fd', col]].dropna()
             
             if len(valid_data) >= 3:  # 最低3データ点必要
                 r, p_value = stats.pearsonr(valid_data['average_fd'], valid_data[col])

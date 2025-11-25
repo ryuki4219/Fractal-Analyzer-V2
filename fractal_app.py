@@ -1,4 +1,4 @@
-# fractal_fd_app_optimized.py
+﻿# fractal_fd_app_optimized.py
 # ============================================================
 # 低画質特化型 フラクタル次元解析＋AI補正（高速化版）
 # - CuPy がある場合は GPU を自動検出して使用
@@ -28,6 +28,15 @@ try:
 except ImportError:
     PLOTLY_AVAILABLE = False
     print("Warning: plotly not found. Install with: pip install plotly")
+
+# PILのインポート（EXIFデータ読み取り用）
+try:
+    from PIL import Image
+    from PIL.ExifTags import TAGS, GPSTAGS
+    PIL_AVAILABLE = True
+except ImportError:
+    PIL_AVAILABLE = False
+    print("Warning: PIL not found. EXIF reading will be disabled.")
 
 # 肌品質評価モジュールをインポート
 try:
@@ -91,6 +100,111 @@ try:
 except Exception:
     USE_CUPY = False
     xp = np
+
+# ============================================================
+# EXIF データ読み取り関数
+# ============================================================
+def extract_exif_data(uploaded_file):
+    """
+    画像ファイルからEXIFメタデータを抽出
+    
+    Args:
+        uploaded_file: Streamlitのアップロードファイル
+    
+    Returns:
+        dict: EXIFデータの辞書
+    """
+    exif_info = {
+        'filename': uploaded_file.name if hasattr(uploaded_file, 'name') else 'unknown',
+        'file_size': None,
+        'image_width': None,
+        'image_height': None,
+        'datetime_original': None,
+        'camera_make': None,
+        'camera_model': None,
+        'exposure_time': None,
+        'f_number': None,
+        'iso': None,
+        'gps_latitude': None,
+        'gps_longitude': None
+    }
+    
+    if not PIL_AVAILABLE:
+        return exif_info
+    
+    try:
+        # ファイルサイズ
+        uploaded_file.seek(0, 2)  # ファイル末尾へ
+        exif_info['file_size'] = uploaded_file.tell()
+        uploaded_file.seek(0)  # 先頭に戻す
+        
+        # PILで画像を開く
+        img = Image.open(uploaded_file)
+        exif_info['image_width'] = img.width
+        exif_info['image_height'] = img.height
+        
+        # EXIFデータを取得
+        exif_data = img._getexif()
+        
+        if exif_data:
+            for tag_id, value in exif_data.items():
+                tag = TAGS.get(tag_id, tag_id)
+                
+                if tag == 'DateTimeOriginal':
+                    exif_info['datetime_original'] = str(value)
+                elif tag == 'Make':
+                    exif_info['camera_make'] = str(value)
+                elif tag == 'Model':
+                    exif_info['camera_model'] = str(value)
+                elif tag == 'ExposureTime':
+                    if hasattr(value, 'numerator'):
+                        exif_info['exposure_time'] = f"{value.numerator}/{value.denominator}"
+                    else:
+                        exif_info['exposure_time'] = str(value)
+                elif tag == 'FNumber':
+                    if hasattr(value, 'numerator'):
+                        exif_info['f_number'] = value.numerator / value.denominator
+                    else:
+                        exif_info['f_number'] = float(value) if value else None
+                elif tag == 'ISOSpeedRatings':
+                    exif_info['iso'] = value
+                elif tag == 'GPSInfo':
+                    # GPS情報の解析
+                    try:
+                        gps_info = {}
+                        for gps_tag_id, gps_value in value.items():
+                            gps_tag = GPSTAGS.get(gps_tag_id, gps_tag_id)
+                            gps_info[gps_tag] = gps_value
+                        
+                        if 'GPSLatitude' in gps_info and 'GPSLongitude' in gps_info:
+                            lat = gps_info['GPSLatitude']
+                            lon = gps_info['GPSLongitude']
+                            lat_ref = gps_info.get('GPSLatitudeRef', 'N')
+                            lon_ref = gps_info.get('GPSLongitudeRef', 'E')
+                            
+                            # 度分秒から10進数に変換
+                            def dms_to_decimal(dms, ref):
+                                d = float(dms[0])
+                                m = float(dms[1])
+                                s = float(dms[2])
+                                decimal = d + m/60 + s/3600
+                                if ref in ['S', 'W']:
+                                    decimal = -decimal
+                                return decimal
+                            
+                            exif_info['gps_latitude'] = dms_to_decimal(lat, lat_ref)
+                            exif_info['gps_longitude'] = dms_to_decimal(lon, lon_ref)
+                    except:
+                        pass
+        
+        uploaded_file.seek(0)  # 先頭に戻す
+        
+    except Exception as e:
+        print(f"EXIF読み取りエラー: {e}")
+        uploaded_file.seek(0)
+    
+    return exif_info
+
 
 # ============================================================
 # Data Augmentation (データ拡張) - 画像が少ない場合の対策
@@ -3284,46 +3398,56 @@ def app():
     st.sidebar.markdown("---")
 
     # アプリケーションモード選択
-    st.sidebar.header("📌 研究用メニュー")
+    st.sidebar.header("📌 メインメニュー")
     
-    # 研究用モード（メイン）
-    research_modes = []
+    # メインモード（顔全体分析がデフォルト）
+    main_modes = ["🌸 顔全体フラクタル分析"]
     
-    # MediaPipeが利用可能な場合のみ顔全体分析を追加
-    if SKIN_ANALYSIS_AVAILABLE:
-        research_modes.append("🌸 顔全体フラクタル分析")
-    
-    research_modes.extend([
-        "🔬 実験データ収集",
-        "📈 相関分析・レポート"
-    ])
-    
-    st.sidebar.markdown("**研究に必要な機能**")
+    st.sidebar.markdown("**🔬 肌分析**")
     app_mode = st.sidebar.radio(
-        "メインモード",
-        research_modes,
+        "分析モード",
+        main_modes,
         index=0,
-        help="顔全体分析: 顔写真から各部位のFD値を自動測定\n実験データ収集: 被験者の肌状態とFD値を記録\n相関分析: FDと肌状態の相関を統計分析"
+        help="顔写真から各部位のFD値を自動測定し、肌の状態を評価します"
     )
     
     st.sidebar.markdown("---")
     
-    # ツールモード（サブ）
-    with st.sidebar.expander("🔧 その他のツール"):
-        tool_mode = st.radio(
-            "ツール選択",
+    # 研究用ツール
+    st.sidebar.header("📊 研究用ツール")
+    with st.sidebar.expander("データ収集・分析", expanded=False):
+        research_tool = st.radio(
+            "研究ツール選択",
+            [
+                "なし",
+                "🔬 実験データ収集",
+                "📈 相関分析・レポート"
+            ],
+            index=0,
+            help="実験データ収集: 被験者の肌状態とFD値を記録\n相関分析: FDと肌状態の相関を統計分析"
+        )
+        if research_tool != "なし":
+            app_mode = research_tool
+    
+    st.sidebar.markdown("---")
+    
+    # 上級者向けツール（完全に分離）
+    st.sidebar.header("🎓 上級者向け")
+    with st.sidebar.expander("学習・予測ツール", expanded=False):
+        advanced_tool = st.radio(
+            "上級ツール選択",
             [
                 "なし",
                 "🔮 単一画像FD計算",
-                "🎓 学習モード (上級者向け)", 
+                "🎓 学習モード", 
                 "📊 過去の研究報告"
             ],
             index=0,
             help="単一画像FD: 低画質画像から高画質FDを予測\n学習モード: 高画質+低画質ペアでモデル学習\n研究報告: 過去の品質最適化研究"
         )
         
-        if tool_mode != "なし":
-            app_mode = tool_mode.replace("単一画像FD計算", "推論モード (低画質画像のみで予測)").replace("過去の研究報告", "研究報告・品質ガイド")
+        if advanced_tool != "なし":
+            app_mode = advanced_tool.replace("単一画像FD計算", "推論モード (低画質画像のみで予測)").replace("過去の研究報告", "研究報告・品質ガイド").replace("学習モード", "🎓 学習モード (上級者向け)")
     
     st.sidebar.markdown("---")
     
@@ -3338,8 +3462,277 @@ def app():
     | 2.0に近い | きめが粗い・荒れ |
     """)
 
+    # ============================================================
+    # 🌸 顔全体分析モード（メイン・デフォルト）
+    # ============================================================
+    if app_mode == "🌸 顔全体フラクタル分析" or app_mode == "🌸 顔全体分析モード":
+        st.header("🌸 顔全体フラクタル分析 - 部位別肌評価")
+        
+        st.markdown("""
+        ### 📸 顔全体を撮影して、各部位を自動分析
+        
+        **このモードでできること:**
+        - 🎯 顔の自動検出と部位分割（額、頬、鼻、口周り、顎など）
+        - 📊 各部位のフラクタル次元（FD）測定
+          * **FD値が高い（3.0に近い）= きめ細かく複雑で綺麗な肌**
+          * **FD値が低い（2.0に近い）= きめが粗く荒れた肌**
+        - 🔍 肌トラブル検出（毛穴、シワ、色ムラ、赤み、クマ等）
+        - 📋 部位別レポート生成
+        
+        **撮影のコツ:**
+        - 正面から顔全体が写るように撮影
+        - 自然光または明るい室内で
+        - 距離は約30-50cm
+        - 無表情で
+        """)
+        
+        uploaded_file = st.file_uploader(
+            "顔写真をアップロード",
+            type=['jpg', 'jpeg', 'png'],
+            help="顔全体が写った画像をアップロードしてください",
+            key="face_analysis_uploader"
+        )
+        
+        if uploaded_file:
+            # 画像読み込み
+            image = read_bgr_from_buffer(uploaded_file.read())
+            
+            if image is None:
+                st.error("画像の読み込みに失敗しました")
+            else:
+                with st.spinner("🔍 顔を検出中..."):
+                    landmarks = detect_face_landmarks(image)
+                
+                if landmarks is None:
+                    st.error("""
+                    ❌ **顔が検出できませんでした**
+                    
+                    以下を確認してください:
+                    - 顔全体が写っているか
+                    - 顔が正面を向いているか
+                    - 画像が明るいか
+                    - 顔が大きすぎたり小さすぎたりしないか
+                    """)
+                else:
+                    st.success("✅ 顔を検出しました！")
+                    
+                    # 各部位を抽出
+                    with st.spinner("📐 部位を分割中..."):
+                        regions = extract_face_regions(image, landmarks)
+                    
+                    if not regions:
+                        st.error("部位の抽出に失敗しました")
+                    else:
+                        st.success(f"✅ {len(regions)}つの部位を検出しました")
+                        
+                        # タブ表示
+                        tab1, tab2, tab3, tab4 = st.tabs([
+                            "📊 総合評価",
+                            "🗺️ 部位表示",
+                            "🔍 詳細分析",
+                            "📋 レポート"
+                        ])
+                        
+                        # 部位別にFD計算と肌トラブル検出
+                        fd_results = {}
+                        trouble_results = {}
+                        
+                        progress_bar = st.progress(0)
+                        status_text = st.empty()
+                        
+                        for idx, (region_name, region_data) in enumerate(regions.items()):
+                            status_text.text(f"解析中: {REGION_NAMES_JP.get(region_name, region_name)}")
+                            
+                            region_image = region_data['image']
+                            
+                            if region_image is not None and region_image.size > 0:
+                                # FD計算
+                                fd_result = calculate_fractal_dimension(region_image)
+                                fd_results[region_name] = fd_result['fd']
+                                
+                                # 肌トラブル検出
+                                troubles = detect_skin_troubles(region_image, region_name)
+                                trouble_results[region_name] = troubles
+                            
+                            progress_bar.progress((idx + 1) / len(regions))
+                        
+                        status_text.empty()
+                        progress_bar.empty()
+                        
+                        # 総合評価タブ
+                        with tab1:
+                            st.subheader("📊 肌の総合評価")
+                            
+                            # 平均FD計算
+                            valid_fds = [fd for fd in fd_results.values() if fd is not None and not np.isnan(fd)]
+                            if valid_fds:
+                                avg_fd = np.mean(valid_fds)
+                                
+                                # スコア計算（FD 2.0→0点、FD 3.0→100点）
+                                overall_score = max(0, min(100, (avg_fd - 2.0) / 1.0 * 100))
+                                
+                                # グレード判定
+                                if overall_score >= 85:
+                                    grade = "S"
+                                    grade_desc = "非常に良好"
+                                    grade_color = "green"
+                                elif overall_score >= 70:
+                                    grade = "A"
+                                    grade_desc = "良好"
+                                    grade_color = "blue"
+                                elif overall_score >= 55:
+                                    grade = "B"
+                                    grade_desc = "普通"
+                                    grade_color = "orange"
+                                elif overall_score >= 40:
+                                    grade = "C"
+                                    grade_desc = "やや注意"
+                                    grade_color = "orange"
+                                else:
+                                    grade = "D"
+                                    grade_desc = "要注意"
+                                    grade_color = "red"
+                                
+                                # 顔全体の写真と評価を横並びで表示
+                                img_col, eval_col = st.columns([1, 1])
+                                
+                                with img_col:
+                                    st.markdown("### 📷 分析対象の顔写真")
+                                    # 顔全体の写真を表示（RGB変換）
+                                    st.image(cv2.cvtColor(image, cv2.COLOR_BGR2RGB), 
+                                            caption="アップロードされた顔写真", 
+                                            use_container_width=True)
+                                
+                                with eval_col:
+                                    st.markdown("### 🏆 評価結果")
+                                    col1, col2, col3 = st.columns(3)
+                                    with col1:
+                                        st.metric("総合グレード", grade, grade_desc)
+                                    with col2:
+                                        st.metric("総合スコア", f"{overall_score:.1f}点")
+                                    with col3:
+                                        st.metric("平均FD値", f"{avg_fd:.4f}")
+                                
+                                st.markdown(f"""
+                                ### 評価基準
+                                - **S (85点以上)**: きめが非常に細かく、健康で美しい肌
+                                - **A (70-84点)**: きめが細かく、良好な状態
+                                - **B (55-69点)**: 平均的な肌状態
+                                - **C (40-54点)**: やや荒れが見られる
+                                - **D (40点未満)**: 肌荒れが目立つ状態
+                                
+                                💡 **FD値が高い（3.0に近い）ほど、肌のきめが細かく複雑で綺麗な状態を示します。**
+                                """)
+                            else:
+                                st.warning("FD値を計算できませんでした")
+                        
+                        # 部位表示タブ
+                        with tab2:
+                            st.subheader("🗺️ 検出された部位")
+                            
+                            # 元画像に部位をオーバーレイ表示
+                            display_image = image.copy()
+                            
+                            colors = {
+                                'forehead': (255, 0, 0),       # 青
+                                'left_cheek': (0, 255, 0),     # 緑
+                                'right_cheek': (0, 255, 0),    # 緑
+                                'nose': (0, 255, 255),         # 黄
+                                'mouth_area': (255, 0, 255),   # マゼンタ
+                                'chin': (255, 255, 0),         # シアン
+                                'left_under_eye': (128, 0, 255),  # 紫
+                                'right_under_eye': (128, 0, 255)  # 紫
+                            }
+                            
+                            for region_name, region_data in regions.items():
+                                x, y, w, h = region_data['bbox']
+                                color = colors.get(region_name, (255, 255, 255))
+                                cv2.rectangle(display_image, (x, y), (x+w, y+h), color, 2)
+                                
+                                # ラベル
+                                label = REGION_NAMES_JP.get(region_name, region_name)
+                                cv2.putText(display_image, label, (x, y-5), 
+                                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+                            
+                            st.image(cv2.cvtColor(display_image, cv2.COLOR_BGR2RGB), 
+                                    caption="検出された部位", use_container_width=True)
+                            
+                            # 各部位の画像を表示
+                            st.markdown("### 各部位の切り出し画像")
+                            cols = st.columns(4)
+                            for idx, (region_name, region_data) in enumerate(regions.items()):
+                                with cols[idx % 4]:
+                                    region_image = region_data['image']
+                                    if region_image is not None and region_image.size > 0:
+                                        st.image(cv2.cvtColor(region_image, cv2.COLOR_BGR2RGB),
+                                                caption=REGION_NAMES_JP.get(region_name, region_name),
+                                                use_container_width=True)
+                        
+                        # 詳細分析タブ
+                        with tab3:
+                            st.subheader("🔍 部位別詳細分析")
+                            
+                            for region_name in regions.keys():
+                                jp_name = REGION_NAMES_JP.get(region_name, region_name)
+                                fd = fd_results.get(region_name)
+                                troubles = trouble_results.get(region_name, {})
+                                
+                                with st.expander(f"**{jp_name}**", expanded=False):
+                                    if fd is not None and not np.isnan(fd):
+                                        # スコア計算
+                                        score = max(0, min(100, (fd - 2.0) / 1.0 * 100))
+                                        
+                                        col1, col2 = st.columns(2)
+                                        with col1:
+                                            st.metric("FD値", f"{fd:.4f}")
+                                        with col2:
+                                            st.metric("スコア", f"{score:.1f}点")
+                                        
+                                        # 肌トラブル
+                                        if troubles:
+                                            st.markdown("**検出された肌の状態:**")
+                                            for trouble_name, trouble_data in troubles.items():
+                                                severity = trouble_data.get('severity', 0)
+                                                if severity > 0.3:
+                                                    st.write(f"- {trouble_name}: {'⚠️' if severity > 0.6 else '📋'} レベル{severity:.1%}")
+                                    else:
+                                        st.write("FD値を計算できませんでした")
+                        
+                        # レポートタブ
+                        with tab4:
+                            st.subheader("📋 分析レポート")
+                            
+                            report_text = f"""
+# 肌フラクタル分析レポート
+
+**分析日時:** {pd.Timestamp.now().strftime('%Y年%m月%d日 %H:%M')}
+
+## 総合評価
+- **グレード:** {grade if 'grade' in dir() else 'N/A'}
+- **スコア:** {overall_score:.1f}点
+- **平均FD値:** {avg_fd:.4f}
+
+## 部位別結果
+"""
+                            for region_name, fd in fd_results.items():
+                                jp_name = REGION_NAMES_JP.get(region_name, region_name)
+                                if fd is not None and not np.isnan(fd):
+                                    score = max(0, min(100, (fd - 2.0) / 1.0 * 100))
+                                    report_text += f"- **{jp_name}:** FD={fd:.4f}, スコア={score:.1f}点\n"
+                            
+                            st.text_area("レポート内容", report_text, height=400)
+                            
+                            st.download_button(
+                                "📥 レポートをダウンロード",
+                                report_text,
+                                file_name=f"skin_analysis_report_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.txt",
+                                mime="text/plain"
+                            )
+
+    # ============================================================
     # 推論モード
-    if app_mode == "🔮 単一画像FD計算" or app_mode == "🔮 推論モード (低画質画像のみで予測)":
+    # ============================================================
+    elif app_mode == "🔮 単一画像FD計算" or app_mode == "🔮 推論モード (低画質画像のみで予測)":
         st.header("🔮 推論モード - 低画質画像だけで高品質FDを予測")
         
         # サブモード選択を追加
@@ -4790,1497 +5183,17 @@ def app():
     # ============================================================
     elif app_mode == "📊 研究報告・品質ガイド":
         show_quality_optimization_report()
-        return  # 研究報告モードはここで終了
 
     # ============================================================
-    # 学習モード (既存のコード)
+    # 学習モード (上級者向け) - 現在は無効化
     # ============================================================
-    st.header("🎓 学習モード - AIを学習させる")
-    
-    # 🎯 学習前の診断とアドバイス
-    with st.expander("💡 効果的な学習のためのガイド", expanded=False):
-        st.markdown("""
-        ### 🎯 信頼度10%から75%以上を目指すために
+    elif app_mode == "🎓 学習モード (上級者向け)" or app_mode == "🎓 学習モード":
+        st.header("🎓 学習モード")
+        st.info("""
+        ⚠️ **学習モードは現在メンテナンス中です**
         
-        #### ⚠️ 信頼度が低い主な原因
-        
-        1. **データ拡張が不足** ← 最重要！
-           - 元画像30枚だけでは不十分
-           - データ拡張で100組以上に増やす必要あり
-        
-        2. **品質レベルの選択ミス**
-           - low1-3: 差が小さすぎて学習困難
-           - **推奨: low4-7** (中度劣化、バランス良好)
-           - 上級: low8-10 (重度劣化、実用的)
-           - **⚠️ 全レベル (low1-10) は非推奨** → 差が大きすぎてMAE悪化
-        
-        3. **単一レベルの学習**
-           - 1つのレベルだけでは汎用性不足
-           - **グループ選択で複数レベル同時学習を推奨**
-        
-        ---
-        
-        ### ✅ 推奨設定（信頼度75%以上を目指す）
-        
-        | 項目 | 推奨設定 | 理由 |
-        |------|----------|------|
-        | **品質レベル** | 🟡 low4-7 (グループ) | バランスが良く、112組のデータ |
-        | **データ拡張** | 15種類以上選択 | 最低100組、理想200組以上 |
-        | **推奨拡張** | 水平反転、回転、明るさ、ガウシアン | 効果的な変化 |
-        
-        ---
-        
-        ### 📊 設定例：信頼度75%達成の実例
-        
-        **設定:**
-        - 元画像: 30組
-        - 品質レベル: low4-7 (グループ選択)
-        - データ拡張: 20種類
-        - 期待データ数: 30 × 4レベル × (1 + 20拡張) = **2,520組**
-        
-        **結果予測:**
-        - 相関係数: 0.85-0.90
-        - 誤差(MAE): 0.005-0.010
-        - 信頼度: **75-85%** (実用レベル)
-        
-        ---
-        
-        ### 🚀 今すぐできる改善策
-        
-        1. **品質レベル**を「🟡 low4-7 (中度劣化)」に変更
-        2. **データ拡張**タブで以下を選択:
-           - ✅ 水平反転
-           - ✅ 垂直反転  
-           - ✅ 90度回転
-           - ✅ 180度回転
-           - ✅ 明るさ調整（暗く）
-           - ✅ 明るさ調整（明るく）
-           - ✅ コントラスト調整（低）
-           - ✅ コントラスト調整（高）
-           - ✅ ガウシアンブラー
-           - ✅ ガウシアンノイズ
-           - ✅ ソルトペッパーノイズ
-           - ✅ JPEG圧縮（品質50）
-           - ✅ シャープネス強調
-           - ✅ エッジ強調
-           - ✅ ヒストグラム平坦化
-        
-        3. **「すべて選択」ボタン**をクリック（28種類すべて選択）
-        
-        **期待される結果:**
-        - データ数: 30 × 4 × 29 = **3,480組**
-        - 信頼度: **80-90%** (プロ～マスターレベル)
+        顔全体フラクタル分析モードをご利用ください。
         """)
-        
-        st.success("""
-        ### ✨ 簡単な手順
-        
-        1. 下の「品質レベルグループ」で **「📘 グループ選択」** を選ぶ
-        2. **「🟡 low4-7 (中度劣化 - 普通)」** を選択
-        3. 「データ拡張」タブで **「すべて選択」** をクリック
-        4. **「🚀 学習開始」** ボタンをクリック
-        5. 10-15分待つ（GPU使用時は5-8分）
-        6. 信頼度が **75%以上** になることを確認！
-        """)
-    
-    # 既存モデルがある場合は通知
-    if st.session_state.get('model_loaded', False):
-        model_info = st.session_state.get('model_info', {})
-        st.info(f"""
-        ℹ️ 既にモデルが読み込まれています ({model_info.get('source', '不明')})
-        
-        - このまま新しく学習すると、**既存モデルは上書き**されます
-        - 既存モデルを保持したい場合は、先にダウンロードしてください
-        - 推論モードに切り替えれば、既存モデルで予測できます
-        """)
-    
-    # モード選択
-    mode = st.radio(
-        "画像読み込みモード",
-        ["📁 フォルダから自動ペアリング", "📤 手動アップロード"],
-        help="フォルダモード: 同じ名前の画像を自動的にペアリング\n手動モード: 個別にアップロード"
-    )
-
-    if mode == "📁 フォルダから自動ペアリング":
-        st.markdown("""
-        ### フォルダ選択ガイド
-        画像ペアの検出パターン:
-        1. **IMG_XXX.jpg + IMG_XXX_low1.jpg** 形式 (例: `E:\\頬画像　画質別\\画質別＿頬画像`)
-        2. **高画質/低画質フォルダ分離** 形式 (今後対応予定)
-        3. **その他のパターン** - 手動モードをご利用ください
-        """)
-        
-        folder_path = st.text_input(
-            "画像フォルダのパス",
-            value=r"E:\画質別頬画像(元画像＋10段階)",
-            help="高画質と低画質の画像が入ったフォルダパスを指定してください"
-        )
-        
-        # ファイル名パターン選択
-        col1, col2 = st.columns(2)
-        with col1:
-            file_pattern = st.selectbox(
-                "ファイル名パターン",
-                ["IMG_*.jpg", "*.jpg", "*.png", "カスタム"],
-                help="検出する画像ファイルのパターン"
-            )
-            if file_pattern == "カスタム":
-                file_pattern = st.text_input("カスタムパターン", value="*.jpg")
-        
-        with col2:
-            # 品質レベルグループ選択を追加
-            quality_group = st.radio(
-                "品質レベルグループ",
-                ["📗 個別選択", "📘 グループ選択"],
-                horizontal=True,
-                help="個別で選択するか、グループで一括選択するか"
-            )
-            
-            if quality_group == "📗 個別選択":
-                quality_level = st.selectbox(
-                    "低画質レベルを選択",
-                    ["low1", "low2", "low3", "low4", "low5", "low6", "low7", "low8", "low9", "low10", "カスタム"],
-                    index=4,  # デフォルトでlow5を選択
-                    help="比較する低画質レベルを選択 (low1が最も高品質、low10が最も低品質)"
-                )
-                if quality_level == "カスタム":
-                    quality_level = st.text_input("カスタムサフィックス", value="low1")
-                quality_levels = [quality_level]  # リストに変換
-            else:
-                # グループ選択
-                quality_group_select = st.selectbox(
-                    "品質グループを選択",
-                    [
-                        "🟢 low1-3 (軽度劣化 - 易しい)",
-                        "🟡 low4-7 (中度劣化 - 普通) 🌟推奨",
-                        "🔴 low8-10 (重度劣化 - 難しい)",
-                        "🌈 全レベル (low1-10) ⚠️非推奨"
-                    ],
-                    index=1,  # デフォルトでlow4-7を選択
-                    help="複数の品質レベルを一括で学習に使用します"
-                )
-                
-                if quality_group_select == "🟢 low1-3 (軽度劣化 - 易しい)":
-                    quality_levels = ["low1", "low2", "low3"]
-                elif quality_group_select == "🟡 low4-7 (中度劣化 - 普通) 🌟推奨":
-                    quality_levels = ["low4", "low5", "low6", "low7"]
-                elif quality_group_select == "🔴 low8-10 (重度劣化 - 難しい)":
-                    quality_levels = ["low8", "low9", "low10"]
-                else:  # 全レベル
-                    quality_levels = [f"low{i}" for i in range(1, 11)]
-                    st.warning("""
-                    ⚠️ **全レベル (low1-10) は推奨されません**
-                    
-                    **理由:**
-                    - 品質差が大きすぎてAIが混乱します
-                    - MAE（平均絶対誤差）が悪化します
-                    - 信頼度が70%以下に留まります
-                    
-                    **推奨:**
-                    - 🟡 low4-7 (中度劣化) を選択してください
-                    - 信頼度85%以上を目指せます
-                    """)
-                
-                st.info(f"✅ 選択: {', '.join(quality_levels)} ({len(quality_levels)}レベル)")
-                quality_level = quality_levels[0]  # 後方互換性のため最初のレベルを代入
-        
-        
-        if folder_path and os.path.exists(folder_path):
-            # フォルダから画像ペアを自動検出
-            all_files = sorted(glob.glob(os.path.join(folder_path, file_pattern)))
-            
-            # 高画質画像を検出(_lowがついていないもの)
-            # 正規表現を使って_low + 数字のパターンを除外
-            high_files = [f for f in all_files if not re.search(r'_low\d+', os.path.basename(f))]
-            
-            if len(all_files) > 0:
-                st.info(f"📂 検出された全画像: {len(all_files)}枚")
-            
-            if len(high_files) > 0:
-                st.success(f"✅ {len(high_files)}枚の高画質画像を検出しました")
-                
-                # デバッグ: 最初のファイルパスを表示
-                with st.expander("🔍 検出された画像パス (デバッグ情報)"):
-                    st.write(f"**フォルダ:** {folder_path}")
-                    st.write(f"**パターン:** {file_pattern}")
-                    st.write(f"**全ファイル数:** {len(all_files)}")
-                    st.write(f"**高画質ファイル数:** {len(high_files)}")
-                    st.write(f"**高画質例:** {os.path.basename(high_files[0]) if high_files else 'なし'}")
-                    if len(high_files) > 1:
-                        st.write(f"**他の例:** {', '.join([os.path.basename(f) for f in high_files[1:min(4, len(high_files))]])}")
-                
-                # 対応する低画質画像を検索
-                # グループ選択の場合は複数レベルを収集
-                low_files_all = []
-                high_files_all = []
-                missing_files = []
-                debug_info = []  # デバッグ用
-                
-                for quality_lv in quality_levels:
-                    for hf in high_files:
-                        base_name = os.path.splitext(os.path.basename(hf))[0]
-                        ext = os.path.splitext(os.path.basename(hf))[1]
-                        low_file = os.path.join(folder_path, f"{base_name}_{quality_lv}{ext}")
-                        # パスの正規化
-                        low_file = os.path.normpath(low_file)
-                        
-                        # デバッグ情報を記録(最初の品質レベルのみ)
-                        if quality_lv == quality_levels[0]:
-                            exists = os.path.exists(low_file)
-                            debug_info.append({
-                                'high': os.path.basename(hf),
-                                'base': base_name,
-                                'ext': ext,
-                                'quality': quality_lv,
-                                'expected': os.path.basename(low_file),
-                                'full_path': low_file,  # フルパスも追加
-                                'exists': exists
-                            })
-                        
-                        if os.path.exists(low_file):
-                            low_files_all.append(low_file)
-                            high_files_all.append(hf)
-                        else:
-                            if quality_lv == quality_levels[0]:  # 最初のレベルのみ記録
-                                missing_files.append(f"{base_name}_{quality_lv}{ext}")
-                
-                # 変数名を統一
-                low_files = low_files_all
-                high_files_for_pairs = high_files_all
-                
-                # デバッグ: 低画質ファイルパスも表示
-                with st.expander("🔍 ペア画像パス (デバッグ情報)", expanded=False):
-                    st.write(f"**📁 指定フォルダ:** `{folder_path}`")
-                    st.write(f"**📋 ファイルパターン:** `{file_pattern}`")
-                    st.write(f"**📋 検出された全画像:** {len(all_files)}枚")
-                    st.write(f"**📋 高画質画像:** {len(high_files)}枚")
-                    if len(quality_levels) > 1:
-                        st.write(f"**🎚️ 選択した品質レベル:** `{', '.join(quality_levels)}` ({len(quality_levels)}レベル)")
-                        st.write(f"**📊 元画像数:** {len(high_files)}")
-                        st.write(f"**📊 収集ペア数:** {len(low_files)} (期待: {len(high_files) * len(quality_levels)})")
-                    else:
-                        st.write(f"**🎚️ 選択した品質レベル:** `{quality_level}`")
-                        st.write(f"**📊 高画質ファイル数:** {len(high_files)}")
-                        st.write(f"**📊 低画質ファイル数:** {len(low_files)}")
-                    st.write("")
-                    
-                    if len(debug_info) > 0:
-                        st.write("### 最初の5件の検索結果:")
-                        for i, info in enumerate(debug_info[:5]):
-                            st.write(f"**{i+1}. {info['high']}**")
-                            st.write(f"  - ベース名: `{info['base']}`")
-                            st.write(f"  - 拡張子: `{info['ext']}`")
-                            st.write(f"  - 品質レベル: `{info['quality']}`")
-                            st.write(f"  - 探すファイル: `{info['expected']}`")
-                            st.write(f"  - フルパス: `{info['full_path']}`")
-                            st.write(f"  - 存在: {'✅ はい' if info['exists'] else '❌ いいえ'}")
-                            st.write("---")
-                    
-                    if len(low_files) > 0:
-                        st.success(f"**見つかった低画質ファイル例:** {os.path.basename(low_files[0])}")
-                    
-                    if missing_files:
-                        st.error(f"**見つからないファイル:** {len(missing_files)}件")
-                        st.write("最初の5件:")
-                        for f in missing_files[:5]:
-                            st.write(f"  - `{f}`")
-                        
-                        # 実際にフォルダ内にあるファイルを表示
-                        st.write("### フォルダ内の実際のファイル (最初の20件):")
-                        actual_files = sorted(glob.glob(os.path.join(folder_path, "*.jpg")))[:20]
-                        for f in actual_files:
-                            fname = os.path.basename(f)
-                            # いずれかのquality_levelを含むファイルをハイライト
-                            is_target = any(f"_{ql}" in fname for ql in quality_levels)
-                            if is_target:
-                                st.write(f"  - ✅ `{fname}`")
-                            else:
-                                st.write(f"  - `{fname}`")
-                
-                
-                # グループ選択の場合は期待値が異なる
-                if len(quality_levels) > 1:
-                    expected_pairs = len(high_files) * len(quality_levels)
-                    if len(low_files) == expected_pairs:
-                        st.success(f"✅ {len(low_files)}組の完全なペアを検出しました ({len(high_files)}画像 × {len(quality_levels)}レベル)")
-                        uploaded_high = high_files_for_pairs
-                        uploaded_low = low_files
-                        auto_mode = True
-                    else:
-                        st.warning(f"⚠️ 一部のペアが見つかりません (期待: {expected_pairs}組, 検出: {len(low_files)}組)")
-                        if len(low_files) > 0:
-                            if st.checkbox("検出されたペアのみで続行する"):
-                                uploaded_high = high_files_for_pairs
-                                uploaded_low = low_files
-                                auto_mode = True
-                                st.info(f"✅ {len(low_files)}組のペアを使用します")
-                            else:
-                                uploaded_high = None
-                                uploaded_low = None
-                                auto_mode = False
-                        else:
-                            uploaded_high = None
-                            uploaded_low = None
-                            auto_mode = False
-                else:
-                    # 個別選択の場合(従来通り)
-                    if len(low_files) == len(high_files):
-                        st.success(f"✅ {len(low_files)}組の完全なペアを検出しました")
-                        uploaded_high = high_files
-                        uploaded_low = low_files
-                        auto_mode = True
-                    else:
-                        st.error(f"❌ ペアが不完全です (高画質: {len(high_files)}枚, 低画質: {len(low_files)}枚)")
-                        if len(low_files) > 0:
-                            st.warning(f"一部のペアのみ使用しますか? (完全なペア: {len(low_files)}組)")
-                            if st.checkbox("不完全でも続行する"):
-                                # 完全なペアのみ使用
-                                valid_high = []
-                                valid_low = []
-                                for hf in high_files:
-                                    base_name = os.path.splitext(os.path.basename(hf))[0]
-                                    ext = os.path.splitext(os.path.basename(hf))[1]
-                                    low_file = os.path.join(folder_path, f"{base_name}_{quality_level}{ext}")
-                                    # パスの正規化
-                                    low_file = os.path.normpath(low_file)
-                                    if os.path.exists(low_file):
-                                        valid_high.append(hf)
-                                        valid_low.append(low_file)
-                                uploaded_high = valid_high
-                                uploaded_low = valid_low
-                                auto_mode = True
-                                st.info(f"✅ {len(valid_high)}組の完全なペアを使用します")
-                            else:
-                                uploaded_high = None
-                                uploaded_low = None
-                                auto_mode = False
-                        else:
-                            uploaded_high = None
-                            uploaded_low = None
-                            auto_mode = False
-            else:
-                st.warning(f"⚠️ フォルダ内に'{file_pattern}'パターンの画像が見つかりません")
-                uploaded_high = None
-                uploaded_low = None
-                auto_mode = False
-        elif folder_path:
-            st.error(f"❌ **フォルダパスが無効です**")
-            st.info(f"指定されたパス: `{folder_path}`")
-            st.info(f"フォルダが存在するか確認してください。")
-            
-            # パスの存在確認の詳細
-            parent_dir = os.path.dirname(folder_path)
-            if os.path.exists(parent_dir):
-                st.warning(f"親フォルダは存在します: `{parent_dir}`")
-                # 親フォルダ内のサブフォルダ一覧を表示
-                try:
-                    subdirs = [d for d in os.listdir(parent_dir) if os.path.isdir(os.path.join(parent_dir, d))]
-                    if subdirs:
-                        st.info(f"利用可能なサブフォルダ: {', '.join(subdirs[:5])}")
-                except:
-                    pass
-            else:
-                st.error(f"親フォルダも存在しません: `{parent_dir}`")
-            
-            uploaded_high = None
-            uploaded_low = None
-            auto_mode = False
-        else:
-            st.info("👆 フォルダパスを入力してください")
-            uploaded_high = None
-            uploaded_low = None
-            auto_mode = False
-    else:
-        uploaded_high = st.file_uploader("高画質画像をペアでアップロード(同枚数)", type=['png','jpg','jpeg'], accept_multiple_files=True)
-        uploaded_low = st.file_uploader("低画質画像をペアでアップロード(同枚数)", type=['png','jpg','jpeg'], accept_multiple_files=True)
-        auto_mode = False
-
-
-    if uploaded_high and uploaded_low:
-        if not auto_mode and len(uploaded_high) != len(uploaded_low):
-            st.error("高画質と低画質の枚数を揃えてください(ペアで解析します)。")
-            return
-
-        # read images
-        if auto_mode:
-            # ファイルパスから直接読み込み(日本語パス対応)
-            high_imgs = []
-            low_imgs = []
-            failed_files = []
-            
-            for hf, lf in zip(uploaded_high, uploaded_low):
-                h_img = read_bgr_from_path(hf)
-                l_img = read_bgr_from_path(lf)
-                
-                if h_img is None:
-                    failed_files.append(f"高画質: {os.path.basename(hf)}")
-                if l_img is None:
-                    failed_files.append(f"低画質: {os.path.basename(lf)}")
-                
-                if h_img is not None and l_img is not None:
-                    high_imgs.append(h_img)
-                    low_imgs.append(l_img)
-            
-            if failed_files:
-                st.error(f"以下のファイルの読み込みに失敗しました:\n" + "\n".join(failed_files[:5]))
-                if len(failed_files) > 5:
-                    st.error(f"...他 {len(failed_files)-5} 件")
-                return
-            
-            # ファイル名を取得
-            high_names = [os.path.basename(f) for f in uploaded_high]
-            low_names = [os.path.basename(f) for f in uploaded_low]
-        else:
-            # アップロードされたファイルから読み込み
-            high_imgs = [read_bgr_from_buffer(f.read()) for f in uploaded_high]
-            low_imgs = [read_bgr_from_buffer(f.read()) for f in uploaded_low]
-            high_names = [f.name for f in uploaded_high]
-            low_names = [f.name for f in uploaded_low]
-
-        if len(high_imgs) == 0:
-            st.error("❌ 画像の読み込みに失敗しました。")
-            return
-        
-        # データ拡張オプション
-        st.markdown("---")
-        st.subheader("🔄 データ拡張 (Data Augmentation)")
-        
-        if len(high_imgs) < 10:
-            st.warning(f"""
-            ⚠️ **画像ペア数が少ないです** (現在: {len(high_imgs)}組)
-            
-            データ拡張を使用すると、少ない画像から多くの学習サンプルを生成できます。
-            """)
-        
-        st.markdown("""
-        **データ拡張とは？**
-        
-        画像に変換を加えて学習サンプル数を増やす手法です。画像が少ない場合に有効です。
-        
-        **📋 利用可能な変換 (全28種類):**
-        
-        **🔄 幾何学変換 (7種類)**
-        - 水平反転、垂直反転
-        - 90度回転、180度回転、270度回転
-        - 微小回転 (±5度) - 方向不変性学習
-        
-        **💡 明るさ・コントラスト (6種類)**
-        - 明るさ増加/減少
-        - コントラスト増加/減少
-        - ガンマ補正 (明るく/暗く)
-        
-        **🎨 色調整 (5種類)**
-        - 彩度増加/減少
-        - 色相シフト
-        - 温度調整 (暖色/寒色) - 照明条件対応 🌟
-        
-        **🔧 画質処理 (6種類)**
-        - ノイズ追加、ぼかし
-        - シャープ化、ヒストグラム均等化
-        - メディアンフィルタ、バイラテラルフィルタ 🌟
-        
-        **🎯 AI学習最適化 (4種類) - フラクタル次元学習に特化 🌟**
-        - スケール変換 (拡大/縮小) - スケール不変性学習
-        - CLAHE - 局所的テクスチャ強調
-        - アンシャープマスク - エッジ強調
-        
-        **🌟 = AI学習に特に効果的**
-        
-        **注意**: 拡張により処理時間が増加します
-        """)
-        
-        # augmentation_methodsを初期化（use_augmentationの外側で定義）
-        augmentation_methods = []
-        
-        use_augmentation = st.checkbox(
-            "データ拡張を使用する",
-            value=len(high_imgs) < 10,
-            help="チェックすると画像ペア数を増やします。画像が10組未満の場合に推奨"
-        )
-        
-        if use_augmentation:
-            st.info("🔄 データ拡張オプション - 使用する変換を選択")
-            
-            # ============================================================
-            # 🎯 全選択ボタン機能
-            # ============================================================
-            col_btn1, col_btn2, col_btn3 = st.columns([2, 2, 3])
-            with col_btn1:
-                if st.button("✅ 全て選択", use_container_width=True, help="全ての拡張機能をオンにします", type="primary"):
-                    st.session_state['select_all_augmentation'] = True
-                    # タブごとの状態もリセット
-                    st.session_state.pop('geo_select_all', None)
-                    st.session_state.pop('bright_select_all', None)
-                    st.session_state.pop('color_select_all', None)
-                    st.session_state.pop('quality_select_all', None)
-                    st.session_state.pop('ai_select_all', None)
-                    st.session_state.pop('recommended_preset', None)
-                    st.rerun()
-            with col_btn2:
-                if st.button("❌ 全て解除", use_container_width=True, help="全ての拡張機能をオフにします"):
-                    st.session_state['select_all_augmentation'] = False
-                    # タブごとの状態もリセット
-                    st.session_state.pop('geo_select_all', None)
-                    st.session_state.pop('bright_select_all', None)
-                    st.session_state.pop('color_select_all', None)
-                    st.session_state.pop('quality_select_all', None)
-                    st.session_state.pop('ai_select_all', None)
-                    st.session_state.pop('recommended_preset', None)
-                    st.rerun()
-            with col_btn3:
-                # 現在の状態を表示
-                select_all_state = st.session_state.get('select_all_augmentation', None)
-                if select_all_state == True:
-                    st.success("✅ 全選択中 (28種類)")
-                elif select_all_state == False:
-                    st.warning("全解除中")
-            
-            # 🚀 クイック推奨設定ボタン（新規追加）
-            st.markdown("---")
-            st.markdown("### 🚀 クイック設定")
-            col_quick1, col_quick2 = st.columns(2)
-            
-            with col_quick1:
-                if st.button("⭐ 推奨設定（15種類）", use_container_width=True, type="secondary",
-                            help="信頼度75%達成に最も効果的な15種類を自動選択\n期待データ数: 30×4レベル×16 = 1,920組"):
-                    # 推奨設定を適用
-                    st.session_state['select_all_augmentation'] = None  # 全選択状態をクリア
-                    st.session_state['geo_select_all'] = None
-                    st.session_state['bright_select_all'] = None
-                    st.session_state['color_select_all'] = None
-                    st.session_state['quality_select_all'] = None
-                    st.session_state['ai_select_all'] = None
-                    
-                    # 推奨設定フラグを立てる
-                    st.session_state['recommended_preset'] = True
-                    st.success("✅ 推奨設定を適用！ 信頼度75%以上を目指します")
-                    st.info("📊 期待データ数: 約1,920組（30画像 × 4レベル × 16倍）")
-                    st.rerun()
-            
-            with col_quick2:
-                if st.button("🏆 マスター設定（全28種類）", use_container_width=True, type="secondary",
-                            help="信頼度90%以上を目指す上級者向け設定\n期待データ数: 30×4レベル×29 = 3,480組"):
-                    st.session_state['select_all_augmentation'] = True
-                    st.session_state.pop('geo_select_all', None)
-                    st.session_state.pop('bright_select_all', None)
-                    st.session_state.pop('color_select_all', None)
-                    st.session_state.pop('quality_select_all', None)
-                    st.session_state.pop('ai_select_all', None)
-                    st.session_state.pop('recommended_preset', None)
-                    st.success("✅ マスター設定を適用！ 信頼度90%以上を目指します")
-                    st.info("📊 期待データ数: 約3,480組（30画像 × 4レベル × 29倍）")
-                    st.rerun()
-            
-            st.markdown("---")
-            
-            # 全選択/解除の状態を取得
-            select_all = st.session_state.get('select_all_augmentation', None)
-            recommended = st.session_state.get('recommended_preset', False)
-            
-            # 全選択/解除の状態を取得
-            select_all = st.session_state.get('select_all_augmentation', None)
-            
-            # タブで分類 - 5つのタブに拡張
-            tab1, tab2, tab3, tab4, tab5 = st.tabs([
-                "🔄 幾何学変換", 
-                "💡 明るさ・コントラスト", 
-                "🎨 色調整", 
-                "🔧 画質処理",
-                "🎯 AI学習最適化 🌟"
-            ])
-            
-            with tab1:
-                st.markdown("**幾何学変換 - 画像の向きや角度を変更**")
-                
-                # タブごとの全選択ボタン
-                col_tab_btn1, col_tab_btn2 = st.columns([1, 3])
-                with col_tab_btn1:
-                    if st.button("✅ 全選択", key="geo_all", help="幾何学変換を全てオン"):
-                        st.session_state['geo_select_all'] = True
-                        st.rerun()
-                with col_tab_btn2:
-                    if st.button("❌ 全解除", key="geo_clear", help="幾何学変換を全てオフ"):
-                        st.session_state['geo_select_all'] = False
-                        st.rerun()
-                
-                geo_select = st.session_state.get('geo_select_all', None)
-                default_geo = True if (select_all or geo_select) else (False if (select_all == False or geo_select == False) else True)
-                default_geo_off = False if (select_all == False or geo_select == False) else (True if (select_all or geo_select) else False)
-                
-                # 推奨設定の場合の値を設定
-                if recommended:
-                    rec_flip_h = True
-                    rec_flip_v = False
-                    rec_rot90 = True
-                    rec_rot180 = True
-                    rec_rot270 = False
-                    rec_rot_small_cw = False
-                    rec_rot_small_ccw = False
-                else:
-                    rec_flip_h = default_geo
-                    rec_flip_v = default_geo_off
-                    rec_rot90 = default_geo
-                    rec_rot180 = default_geo_off
-                    rec_rot270 = default_geo_off
-                    rec_rot_small_cw = default_geo_off
-                    rec_rot_small_ccw = default_geo_off
-                
-                col1, col2 = st.columns(2)
-                with col1:
-                    use_flip_h = st.checkbox("🔄 水平反転 (左右反転)", value=rec_flip_h, help="画像を左右反転", key="aug_flip_h")
-                    use_flip_v = st.checkbox("🔃 垂直反転 (上下反転)", value=rec_flip_v, help="画像を上下反転", key="aug_flip_v")
-                    use_rotate_90 = st.checkbox("↩️ 90度回転", value=rec_rot90, help="時計回りに90度回転", key="aug_rot90")
-                    use_rotate_180 = st.checkbox("🔁 180度回転", value=rec_rot180, help="180度回転", key="aug_rot180")
-                with col2:
-                    use_rotate_270 = st.checkbox("↪️ 270度回転", value=rec_rot270, help="時計回りに270度回転", key="aug_rot270")
-                    use_rotate_small_cw = st.checkbox("🔄 微小回転(+5°) 🌟", value=rec_rot_small_cw, help="時計回りに5度回転 - 方向不変性学習に効果的", key="aug_rot_small_cw")
-                    use_rotate_small_ccw = st.checkbox("🔄 微小回転(-5°) 🌟", value=rec_rot_small_ccw, help="反時計回りに5度回転 - 方向不変性学習に効果的", key="aug_rot_small_ccw")
-            
-            with tab2:
-                st.markdown("**明るさ・コントラスト - 画像の明るさやコントラストを調整**")
-                
-                # タブごとの全選択ボタン
-                col_tab_btn1, col_tab_btn2 = st.columns([1, 3])
-                with col_tab_btn1:
-                    if st.button("✅ 全選択", key="bright_all", help="明るさ・コントラストを全てオン"):
-                        st.session_state['bright_select_all'] = True
-                        st.rerun()
-                with col_tab_btn2:
-                    if st.button("❌ 全解除", key="bright_clear", help="明るさ・コントラストを全てオフ"):
-                        st.session_state['bright_select_all'] = False
-                        st.rerun()
-                
-                bright_select = st.session_state.get('bright_select_all', None)
-                default_bright = False if (select_all == False or bright_select == False) else (True if (select_all or bright_select) else False)
-                
-                # 推奨設定の場合の値を設定（明るさ調整は重要）
-                if recommended:
-                    rec_bright = True  # 明るさ系は全て推奨
-                else:
-                    rec_bright = default_bright
-                
-                col1, col2 = st.columns(2)
-                with col1:
-                    use_brightness_up = st.checkbox("☀️ 明るさ増加 (+20%)", value=rec_bright, help="画像を20%明るく", key="aug_br_up")
-                    use_brightness_down = st.checkbox("🌙 明るさ減少 (-20%)", value=rec_bright, help="画像を20%暗く", key="aug_br_down")
-                    use_contrast_up = st.checkbox("📈 コントラスト増加", value=rec_bright, help="コントラストを強く", key="aug_cont_up")
-                with col2:
-                    use_contrast_down = st.checkbox("📉 コントラスト減少", value=rec_bright, help="コントラストを弱く", key="aug_cont_down")
-                    use_gamma_bright = st.checkbox("✨ ガンマ補正 (明るく)", value=rec_bright if recommended else default_bright, help="ガンマ補正で明るく", key="aug_gamma_br")
-                    use_gamma_dark = st.checkbox("🌑 ガンマ補正 (暗く)", value=rec_bright if recommended else default_bright, help="ガンマ補正で暗く", key="aug_gamma_dk")
-            
-            with tab3:
-                st.markdown("**色調整 - 画像の色合いや彩度を変更**")
-                
-                # タブごとの全選択ボタン
-                col_tab_btn1, col_tab_btn2 = st.columns([1, 3])
-                with col_tab_btn1:
-                    if st.button("✅ 全選択", key="color_all", help="色調整を全てオン"):
-                        st.session_state['color_select_all'] = True
-                        st.rerun()
-                with col_tab_btn2:
-                    if st.button("❌ 全解除", key="color_clear", help="色調整を全てオフ"):
-                        st.session_state['color_select_all'] = False
-                        st.rerun()
-                
-                color_select = st.session_state.get('color_select_all', None)
-                default_color = False if (select_all == False or color_select == False) else (True if (select_all or color_select) else False)
-                
-                # 推奨設定では色調整は控えめに
-                rec_color = False if recommended else default_color
-                
-                col1, col2 = st.columns(2)
-                with col1:
-                    use_saturation_up = st.checkbox("🌈 彩度増加", value=rec_color, help="色を鮮やかに", key="aug_sat_up")
-                    use_saturation_down = st.checkbox("🌫️ 彩度減少", value=rec_color, help="色を淡く", key="aug_sat_down")
-                    use_hue_shift = st.checkbox("🎨 色相シフト", value=rec_color, help="色合いを変更", key="aug_hue")
-                with col2:
-                    use_temp_warm = st.checkbox("🔥 温度調整(暖色) 🌟", value=rec_color, help="照明条件の変化に対応 - AI学習に効果的", key="aug_temp_warm")
-                    use_temp_cool = st.checkbox("❄️ 温度調整(寒色) 🌟", value=rec_color, help="照明条件の変化に対応 - AI学習に効果的", key="aug_temp_cool")
-            
-            with tab4:
-                st.markdown("**画質処理 - ノイズやぼかし、シャープ化などの処理**")
-                
-                # タブごとの全選択ボタン
-                col_tab_btn1, col_tab_btn2 = st.columns([1, 3])
-                with col_tab_btn1:
-                    if st.button("✅ 全選択", key="quality_all", help="画質処理を全てオン"):
-                        st.session_state['quality_select_all'] = True
-                        st.rerun()
-                with col_tab_btn2:
-                    if st.button("❌ 全解除", key="quality_clear", help="画質処理を全てオフ"):
-                        st.session_state['quality_select_all'] = False
-                        st.rerun()
-                
-                quality_select = st.session_state.get('quality_select_all', None)
-                default_quality = False if (select_all == False or quality_select == False) else (True if (select_all or quality_select) else False)
-                
-                # 推奨設定では重要な画質処理を選択
-                if recommended:
-                    rec_quality = True
-                    rec_quality_off = False
-                else:
-                    rec_quality = default_quality
-                    rec_quality_off = default_quality
-                
-                col1, col2 = st.columns(2)
-                with col1:
-                    use_noise = st.checkbox("📡 ノイズ追加", value=rec_quality, help="ガウシアンノイズを追加", key="aug_noise")
-                    use_blur = st.checkbox("🌀 ぼかし", value=rec_quality, help="ガウシアンぼかしを適用", key="aug_blur")
-                    use_sharpen = st.checkbox("🔪 シャープ化", value=rec_quality, help="エッジを強調", key="aug_sharp")
-                with col2:
-                    use_equalize = st.checkbox("📊 ヒストグラム均等化", value=rec_quality_off, help="コントラストを自動調整", key="aug_eq")
-                    use_median = st.checkbox("🔲 メディアンフィルタ 🌟", value=rec_quality_off, help="ノイズ除去 - フラクタル構造保持に効果的", key="aug_median")
-                    use_bilateral = st.checkbox("🎭 バイラテラル 🌟", value=rec_quality_off, help="エッジ保存平滑化 - AI学習に効果的", key="aug_bilateral")
-            
-            # 🎯 AI学習最適化タブ (新規追加)
-            with tab5:
-                st.markdown("**AI学習最適化 - フラクタル次元学習に特化した拡張 🌟**")
-                st.info("これらの拡張は、フラクタル次元のAI学習に特に効果的です。スケール不変性、局所的な特徴抽出、エッジ保存などを強化します。")
-                
-                # タブごとの全選択ボタン
-                col_tab_btn1, col_tab_btn2 = st.columns([1, 3])
-                with col_tab_btn1:
-                    if st.button("✅ 全選択", key="ai_all", help="AI学習最適化を全てオン"):
-                        st.session_state['ai_select_all'] = True
-                        st.rerun()
-                with col_tab_btn2:
-                    if st.button("❌ 全解除", key="ai_clear", help="AI学習最適化を全てオフ"):
-                        st.session_state['ai_select_all'] = False
-                        st.rerun()
-                
-                ai_select = st.session_state.get('ai_select_all', None)
-                default_ai = False if (select_all == False or ai_select == False) else (True if (select_all or ai_select) else False)
-                
-                col1, col2 = st.columns(2)
-                with col1:
-                    use_scale_up = st.checkbox("📐 スケール拡大 🌟", value=default_ai, help="110%に拡大 - スケール不変性学習", key="aug_scale_up")
-                    use_scale_down = st.checkbox("📐 スケール縮小 🌟", value=default_ai, help="90%に縮小 - スケール不変性学習", key="aug_scale_down")
-                with col2:
-                    use_clahe = st.checkbox("🔆 CLAHE 🌟", value=default_ai, help="適応的ヒストグラム均等化 - 局所的テクスチャ強調", key="aug_clahe")
-                    use_unsharp = st.checkbox("🔍 アンシャープマスク 🌟", value=default_ai, help="エッジ強調 - フラクタル構造の境界明確化", key="aug_unsharp")
-            
-            # 選択された拡張手法を収集（既に初期化済みのリストをクリアして再構築）
-            augmentation_methods.clear()
-            
-            # 幾何学変換
-            if use_flip_h:
-                augmentation_methods.append('flip_h')
-            if use_flip_v:
-                augmentation_methods.append('flip_v')
-            if use_rotate_90:
-                augmentation_methods.append('rotate_90')
-            if use_rotate_180:
-                augmentation_methods.append('rotate_180')
-            if use_rotate_270:
-                augmentation_methods.append('rotate_270')
-            if use_rotate_small_cw:
-                augmentation_methods.append('rotate_small_cw')
-            if use_rotate_small_ccw:
-                augmentation_methods.append('rotate_small_ccw')
-            
-            # 明るさ・コントラスト
-            if use_brightness_up:
-                augmentation_methods.append('brightness_up')
-            if use_brightness_down:
-                augmentation_methods.append('brightness_down')
-            if use_contrast_up:
-                augmentation_methods.append('contrast_up')
-            if use_contrast_down:
-                augmentation_methods.append('contrast_down')
-            if use_gamma_bright:
-                augmentation_methods.append('gamma_bright')
-            if use_gamma_dark:
-                augmentation_methods.append('gamma_dark')
-            
-            # 色調整
-            if use_saturation_up:
-                augmentation_methods.append('saturation_up')
-            if use_saturation_down:
-                augmentation_methods.append('saturation_down')
-            if use_hue_shift:
-                augmentation_methods.append('hue_shift')
-            if use_temp_warm:
-                augmentation_methods.append('temp_warm')
-            if use_temp_cool:
-                augmentation_methods.append('temp_cool')
-            
-            # 画質処理
-            if use_noise:
-                augmentation_methods.append('noise')
-            if use_blur:
-                augmentation_methods.append('blur')
-            if use_sharpen:
-                augmentation_methods.append('sharpen')
-            if use_equalize:
-                augmentation_methods.append('equalize')
-            if use_median:
-                augmentation_methods.append('median')
-            if use_bilateral:
-                augmentation_methods.append('bilateral')
-            
-            # AI学習最適化
-            if use_scale_up:
-                augmentation_methods.append('scale_up')
-            if use_scale_down:
-                augmentation_methods.append('scale_down')
-            if use_clahe:
-                augmentation_methods.append('clahe')
-            if use_unsharp:
-                augmentation_methods.append('unsharp')
-            
-            if augmentation_methods:
-                # データ拡張を適用
-                original_count = len(high_imgs)
-                
-                # 選択された拡張方法の情報を表示
-                st.info(f"""
-                **選択された拡張方法: {len(augmentation_methods)}種類**
-                
-                - 元の画像ペア数: {original_count}組
-                - 予想される拡張後: {original_count * (len(augmentation_methods) + 1)}組 (元画像 + 拡張版)
-                """)
-                
-                high_imgs, low_imgs, high_names, low_names = apply_data_augmentation(
-                    high_imgs, low_imgs, high_names, low_names, augmentation_methods
-                )
-                augmented_count = len(high_imgs)
-                
-                st.success(f"""
-                ✅ データ拡張完了
-                - 元の画像ペア数: {original_count}組
-                - 拡張後の画像ペア数: {augmented_count}組
-                - 増加率: {((augmented_count / original_count - 1) * 100):.0f}%
-                - 使用した拡張方法: {len(augmentation_methods)}種類
-                """)
-            else:
-                st.warning("⚠️ 少なくとも1つの拡張手法を選択してください")
-        
-        st.markdown("---")
-        
-        # サンプル数チェック
-        if len(high_imgs) < 2:
-            st.error(f"""
-            ❌ **画像ペア数が不足しています**
-            
-            - 検出された画像ペア数: **{len(high_imgs)}**
-            - 必要な最小ペア数: **2**
-            
-            💡 **解決方法:**
-            1. フォルダ内に少なくとも**2組以上**の画像ペアがあることを確認してください
-            2. ファイル名パターンが正しいか確認してください
-               - 例: `IMG_0001.jpg` と `IMG_0001_low1.jpg`
-               - 例: `photo1.png` と `photo1_low1.png`
-            3. 「デバッグ情報を表示」で検出状況を確認してください
-            """)
-            return
-            
-        st.success(f"✅ {len(high_imgs)} 組の画像ペアを読み込みました。")
-
-        # Quick preview first pair (説明付き)
-        st.subheader("📷 プレビュー (1枚目)")
-        st.markdown("""
-        **これから解析する画像ペアの例:**
-        - **左 (低画質)**: AIがこの画像から高画質相当のFDを予測します
-        - **右 (高画質)**: AIの予測の正解値として使用します (学習・評価用)
-        
-        💡 AIは低画質画像の特徴を学習し、高画質相当の正確なフラクタル次元を推定します。
-        """)
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            st.image(cv2.cvtColor(low_imgs[0], cv2.COLOR_BGR2RGB), caption=f"低画質: {low_names[0]}", width=300)
-        with col2:
-            st.image(cv2.cvtColor(high_imgs[0], cv2.COLOR_BGR2RGB), caption=f"高画質: {high_names[0]}", width=300)
-
-        # Train button
-        if st.button("🔧 AI を学習して解析を実行"):
-            try:
-                st.info("学習を開始します...")
-                start = time.time()
-                model = train_fd_predictor_fast(low_imgs, high_imgs)
-                st.success("学習完了しました。")
-                
-                # モデルを保存
-                model_path = save_model(model, "trained_fd_model.pkl")
-                st.success(f"💾 モデルを保存しました: {model_path}")
-                
-                # ============================================================
-                # 🔄 モデルを永続化 - アプリ全体で使用可能に
-                # ============================================================
-                st.session_state['persistent_model'] = model
-                st.session_state['model_loaded'] = True
-                
-                # ファイルの更新日時を取得
-                model_mtime = os.path.getmtime(model_path)
-                model_date = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(model_mtime))
-                
-                st.session_state['model_info'] = {
-                    'path': model_path,
-                    'loaded_at': time.strftime('%Y-%m-%d %H:%M:%S'),
-                    'trained_at': model_date,
-                    'source': '学習モード（今回の学習）',
-                    'file_size': os.path.getsize(model_path)
-                }
-                
-                st.success("""
-                ✅ **モデルを永続化しました**
-                
-                **保存内容:**
-                - 🤖 学習済みAIモデル → `trained_fd_model.pkl`
-                - 📚 学習履歴 → `training_history.json`
-                
-                **次回起動時:**
-                - ✅ このモデルが自動的に読み込まれます
-                - ✅ 学習履歴が引き継がれます
-                - ✅ すぐに推論モードで解析できます
-                
-                💡 アプリを閉じても、あなたのAIの知識は保存されています！
-                """)
-                
-                # モデルダウンロードボタン
-                with open(model_path, 'rb') as f:
-                    model_data = f.read()
-                st.download_button(
-                    label="📥 学習済みモデルをダウンロード",
-                    data=model_data,
-                    file_name="trained_fd_model.pkl",
-                    mime="application/octet-stream",
-                    help="このモデルを保存して、後で推論モードで使用できます"
-                )
-
-                # Evaluate & show metrics
-                st.info("解析・比較を行います...")
-                D_high, D_low, D_pred = evaluate_and_plot(high_imgs, low_imgs, model, use_gpu=use_gpu_checkbox)
-                
-                # 学習履歴を保存
-                training_record = {
-                    'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
-                    'num_pairs': len(high_imgs),
-                    'quality_level': quality_level,
-                    'augmentation_count': len(augmentation_methods),
-                    'augmentation_types': augmentation_methods,
-                    'total_samples': len(low_imgs),
-                    'model_params': {
-                        'n_estimators': 400,
-                        'max_depth': 8,
-                        'learning_rate': 0.05
-                    }
-                }
-                
-                # 評価結果を履歴に追加
-                if 'metrics' in st.session_state:
-                    training_record['metrics'] = st.session_state['metrics']
-                
-                history_path = save_training_history(training_record)
-                if history_path:
-                    # 学習履歴統計を更新
-                    all_history = load_training_history()
-                    st.session_state['history_stats'] = {
-                        'total_sessions': len(all_history),
-                        'last_trained': training_record['timestamp'],
-                        'total_samples': sum(h.get('total_samples', 0) for h in all_history)
-                    }
-                    
-                    st.info(f"""
-                    📊 **学習履歴を保存しました**
-                    
-                    - 📁 ファイル: `{history_path}`
-                    - 🎓 今回の学習回数: {len(all_history)}回目
-                    - 📈 累計学習データ: {st.session_state['history_stats']['total_samples']:,}組
-                    
-                    💾 この履歴は次回起動時も保持されます
-                    """)
-                
-                # ⚠️ 全レベル使用時の警告
-                if len(quality_levels) >= 10:
-                    st.warning("""
-                    ⚠️ **全レベル (low1-10) を使用しています**
-                    
-                    **現在の状況:**
-                    - 品質差が大きすぎるため、MAEが悪化している可能性があります
-                    - 信頼度が70%以下に留まる可能性があります
-                    
-                    **改善策:**
-                    1. 品質レベルを **「🟡 low4-7 (中度劣化)」** に変更
-                    2. データ拡張を **「マスター設定 (28種類)」** に設定
-                    3. 再学習を実行
-                    
-                    **期待される結果:**
-                    - MAE: 0.03以下
-                    - 信頼度: 85%以上
-                    """)
-                
-                # ============================================================
-                # 🎯 AI性能評価を表示
-                # ============================================================
-                if 'metrics' in st.session_state:
-                    metrics = st.session_state['metrics']
-                    evaluation = evaluate_ai_performance(
-                        metrics.get('correlation_pred', 0),
-                        metrics.get('improvement', 0),
-                        metrics.get('mae_pred', 0)
-                    )
-                    
-                    st.markdown("---")
-                    st.subheader("🎯 AI性能総合評価")
-                    
-                    col1, col2, col3 = st.columns(3)
-                    with col1:
-                        st.metric(
-                            label="総合評価",
-                            value=evaluation['grade'],
-                            help=f"スコア: {evaluation['score']:.1f}/100"
-                        )
-                    with col2:
-                        st.metric(
-                            label="相関係数評価",
-                            value=evaluation['correlation_grade'],
-                            delta=f"{metrics.get('correlation_pred', 0):.3f}"
-                        )
-                    with col3:
-                        st.metric(
-                            label="改善率",
-                            value=f"{metrics.get('improvement', 0):.1f}%",
-                            delta="良好" if metrics.get('improvement', 0) > 50 else "要改善"
-                        )
-                    
-                    st.info(f"{evaluation['emoji']} **{evaluation['comment']}**")
-                    
-                    # MAEが高い場合の警告
-                    if metrics.get('mae_pred', 1.0) > 0.04 and len(quality_levels) >= 10:
-                        st.error("""
-                        ⚠️ **MAEが高いです (0.04以上)**
-                        
-                        **原因:**
-                        - 全レベル (low1-10) を使用しているため、品質差が大きすぎます
-                        - low1 (軽度劣化) と low10 (重度劣化) では復元難易度が異なります
-                        - AIが一貫した補正ルールを学習できていません
-                        
-                        **解決策:**
-                        1. 品質レベルを **「🟡 low4-7」** に変更して再学習
-                        2. または **「🔴 low8-10」** (重度劣化専門) を選択
-                        3. データ拡張を28種類 (マスター設定) に増やす
-                        
-                        **期待される改善:**
-                        - MAE: 0.04 → 0.02-0.03
-                        - 信頼度: 70% → 85%以上
-                        """)
-                    
-                    # 詳細分析
-                    with st.expander("📊 詳細分析"):
-                        st.write("### 各評価項目のポイント")
-                        st.write(f"- **相関係数スコア**: {evaluation['details']['corr_points']:.1f}/100")
-                        st.write(f"- **改善率スコア**: {evaluation['details']['improve_points']:.1f}/100")
-                        st.write(f"- **MAEスコア**: {evaluation['details']['mae_points']:.1f}/100")
-                        st.write("")
-                        st.write(f"**総合スコア計算式**: 相関50% + 改善率30% + MAE20%")
-                        st.write(f"= {evaluation['details']['corr_points']:.1f}×0.5 + {evaluation['details']['improve_points']:.1f}×0.3 + {evaluation['details']['mae_points']:.1f}×0.2")
-                        st.write(f"= **{evaluation['score']:.1f}点**")
-                    
-                    # 成長分析(複数回学習している場合)
-                    all_history = load_training_history()
-                    if len(all_history) >= 2:
-                        growth = analyze_learning_growth(all_history)
-                        with st.expander("📈 学習成長トレンド"):
-                            st.write(f"### {growth['trend']} {growth['trend_emoji']}")
-                            st.write(f"**学習セッション数**: {growth['num_sessions']}回")
-                            st.write(f"**前回からの変化**:")
-                            st.write(f"  - 相関係数: {growth['correlation_change']:+.3f}")
-                            st.write(f"  - 改善率: {growth['improvement_change']:+.1f}%")
-                            st.write(f"**歴代最高記録**:")
-                            st.write(f"  - 相関係数: {growth['best_correlation']:.3f}")
-                            st.write(f"  - 改善率: {growth['best_improvement']:.1f}%")
-                            st.write("")
-                            st.info(f"💡 **推奨アクション**: {growth['recommendation']}")
-                    
-                    st.markdown("---")
-                
-                # 結果をsession_stateに保存
-                st.session_state['analysis_results'] = {
-                    'D_high': D_high,
-                    'D_low': D_low,
-                    'D_pred': D_pred,
-                    'high_names': high_names,
-                    'low_names': low_names,
-                    'model': model,  # モデルも保存
-                    'completed': True
-                }
-            except ValueError as e:
-                st.error(str(e))
-                st.stop()
-            except Exception as e:
-                st.error(f"❌ **エラーが発生しました:** {str(e)}")
-                st.stop()
-        
-        # 結果が保存されている場合は表示
-        if 'analysis_results' in st.session_state and st.session_state['analysis_results'].get('completed'):
-            results = st.session_state['analysis_results']
-            D_high = results['D_high']
-            D_low = results['D_low']
-            D_pred = results['D_pred']
-            high_names = results['high_names']
-            low_names = results['low_names']
-            
-            # show detailed table
-            st.subheader("📋 詳細データ一覧")
-            
-            st.markdown("""
-            ### 表の各列の意味
-            
-            - **No.**: 画像の番号
-            - **画像名**: 処理した画像のファイル名
-            - **高画質FD**: 高画質画像から計算した正解のフラクタル次元 (**目標値**)
-            - **低画質FD**: 低画質画像から直接計算したFD (**補正なし、通常は不正確**)
-            - **AI補正FD**: AIが低画質から予測した高画質相当のFD (**AI補正後**)
-            - **低画質誤差**: |高画質FD - 低画質FD| = 補正なしの誤差 (大きいほど不正確)
-            - **AI補正誤差**: |高画質FD - AI補正FD| = AI補正後の誤差 (**小さいほど優秀**)
-            - **改善率**: (低画質誤差 - AI補正誤差) / 低画質誤差 × 100% (**高いほどAIが効果的**)
-            
-            💡 **見方のポイント**: 
-            - AI補正誤差が低画質誤差より小さければAI補正が成功
-            - 改善率がプラスならAIによる改善あり、マイナスなら悪化
-            """)
-            
-            import pandas as pd
-            df = pd.DataFrame({
-                "No.": range(1, len(D_high)+1),
-                "画像名": [name.replace('.jpg', '').replace('IMG_', '') for name in high_names],
-                "高画質FD": [f"{x:.4f}" if x is not None else "N/A" for x in D_high],
-                "低画質FD": [f"{x:.4f}" if x is not None else "N/A" for x in D_low],
-                "AI補正FD": [f"{x:.4f}" if x is not None else "N/A" for x in D_pred],
-                "低画質誤差": [f"{abs(h-l):.4f}" if h is not None and l is not None else "N/A" 
-                          for h, l in zip(D_high, D_low)],
-                "AI補正誤差": [f"{abs(h-p):.4f}" if h is not None and p is not None else "N/A" 
-                           for h, p in zip(D_high, D_pred)],
-                "改善率": [f"{((abs(h-l)-abs(h-p))/abs(h-l)*100):.1f}%" 
-                        if h is not None and l is not None and p is not None and abs(h-l) > 0
-                        else "N/A"
-                        for h, l, p in zip(D_high, D_low, D_pred)]
-            })
-            
-            # カラム幅を指定して表示
-            st.dataframe(
-                df,
-                use_container_width=True,
-                hide_index=True,
-                height=350,
-                column_config={
-                    "No.": st.column_config.NumberColumn("No.", width="small"),
-                    "画像名": st.column_config.TextColumn("画像名", width="medium"),
-                    "高画質FD": st.column_config.TextColumn("高画質FD", width="small"),
-                    "低画質FD": st.column_config.TextColumn("低画質FD", width="small"),
-                    "AI補正FD": st.column_config.TextColumn("AI補正FD", width="small"),
-                    "低画質誤差": st.column_config.TextColumn("低画質誤差", width="small"),
-                    "AI補正誤差": st.column_config.TextColumn("AI補正誤差", width="small"),
-                    "改善率": st.column_config.TextColumn("改善率", width="small"),
-                }
-            )
-            
-            # 統計サマリー
-            with st.expander("📊 統計サマリー - 全データの統計情報"):
-                st.markdown("""
-                **各統計の意味:**
-                - **平均**: 全画像のフラクタル次元の平均値
-                - **標準偏差**: データのばらつき (小さいほど均一、大きいほど多様)
-                - **最小/最大**: データの範囲
-                
-                💡 **比較のポイント**: AI補正FDの統計が高画質FDに近いほど、AIの予測が正確です。
-                """)
-                
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.write("### 高画質FD統計")
-                    st.caption("(正解値)")
-                    valid_high = [x for x in D_high if x is not None]
-                    st.write(f"**平均:** {np.mean(valid_high):.4f}")
-                    st.write(f"**標準偏差:** {np.std(valid_high):.4f}")
-                    st.write(f"**最小:** {np.min(valid_high):.4f}")
-                    st.write(f"**最大:** {np.max(valid_high):.4f}")
-                
-                with col2:
-                    st.write("### 低画質FD統計")
-                    st.caption("(補正なし)")
-                    valid_low = [x for x in D_low if x is not None]
-                    st.write(f"**平均:** {np.mean(valid_low):.4f}")
-                    st.write(f"**標準偏差:** {np.std(valid_low):.4f}")
-                    st.write(f"**最小:** {np.min(valid_low):.4f}")
-                    st.write(f"**最大:** {np.max(valid_low):.4f}")
-                
-                with col3:
-                    st.write("### AI補正FD統計")
-                    st.caption("(AI予測値)")
-                    valid_pred = [x for x in D_pred if x is not None]
-                    st.write(f"**平均:** {np.mean(valid_pred):.4f}")
-                    st.write(f"**標準偏差:** {np.std(valid_pred):.4f}")
-                    st.write(f"**最小:** {np.min(valid_pred):.4f}")
-                    st.write(f"**最大:** {np.max(valid_pred):.4f}")
-
-    # ============================================================
-    # 🌸 顔全体分析モード
-    # ============================================================
-    elif app_mode == "🌸 顔全体フラクタル分析" or app_mode == "🌸 顔全体分析モード":
-        st.header("🌸 顔全体フラクタル分析 - 部位別肌評価")
-        
-        if not SKIN_ANALYSIS_AVAILABLE:
-            st.error("""
-            ❌ **顔分析機能が利用できません**
-            
-            `skin_analysis.py`モジュールが見つかりません。
-            または`mediapipe`がインストールされていません。
-            
-            以下のコマンドでインストールしてください:
-            ```
-            pip install mediapipe
-            ```
-            """)
-            return
-        
-        st.markdown("""
-        ### 📸 顔全体を撮影して、各部位を自動分析
-        
-        **このモードでできること:**
-        - 🎯 顔の自動検出と部位分割（額、頬、鼻、口周り、顎など）
-        - 📊 各部位のフラクタル次元（FD）測定
-          * **FD値が高い（3.0に近い）= きめ細かく複雑で綺麗な肌**
-          * **FD値が低い（2.0に近い）= きめが粗く荒れた肌**
-        - 🔍 肌トラブル検出（毛穴、シワ、色ムラ、赤み、クマ等）
-        - 📋 部位別レポート生成
-        
-        **撮影のコツ:**
-        - 正面から顔全体が写るように撮影
-        - 自然光または明るい室内で
-        - 距離は約30-50cm
-        - 無表情で
-        """)
-        
-        uploaded_file = st.file_uploader(
-            "顔写真をアップロード",
-            type=['jpg', 'jpeg', 'png'],
-            help="顔全体が写った画像をアップロードしてください"
-        )
-        
-        if uploaded_file:
-            # 画像読み込み
-            image = read_bgr_from_buffer(uploaded_file.read())
-            
-            if image is None:
-                st.error("画像の読み込みに失敗しました")
-                return
-            
-            with st.spinner("🔍 顔を検出中..."):
-                landmarks = detect_face_landmarks(image)
-            
-            if landmarks is None:
-                st.error("""
-                ❌ **顔が検出できませんでした**
-                
-                以下を確認してください:
-                - 顔全体が写っているか
-                - 顔が正面を向いているか
-                - 画像が明るいか
-                - 顔が大きすぎたり小さすぎたりしないか
-                """)
-                return
-            
-            st.success("✅ 顔を検出しました！")
-            
-            # 各部位を抽出
-            with st.spinner("📐 部位を分割中..."):
-                regions = extract_face_regions(image, landmarks)
-            
-            if not regions:
-                st.error("部位の抽出に失敗しました")
-                return
-            
-            st.success(f"✅ {len(regions)}つの部位を検出しました")
-            
-            # タブ表示
-            tab1, tab2, tab3, tab4 = st.tabs([
-                "📊 総合評価",
-                "🗺️ 部位表示",
-                "🔍 詳細分析",
-                "📋 レポート"
-            ])
-            
-            # 部位別にFD計算と肌トラブル検出
-            fd_results = {}
-            trouble_results = {}
-            
-            progress_bar = st.progress(0)
-            status_text = st.empty()
-            
-            for idx, (region_name, region_data) in enumerate(regions.items()):
-                status_text.text(f"解析中: {REGION_NAMES_JP.get(region_name, region_name)}")
-                
-                region_img = region_data['image']
-                
-                if region_img is not None and region_img.size > 0:
-                    # FD計算
-                    fd_result = calculate_fractal_dimension(region_img)
-                    fd_results[region_name] = fd_result['fd']
-                    
-                    # 肌トラブル検出
-                    troubles = detect_skin_troubles(region_img, region_name)
-                    # FD値をキメの粗さスコアに反映
-                    if 'texture_roughness' in troubles:
-                        fd_score = min((fd_result['fd'] - 2.0) / 1.0 * 100, 100)
-                        troubles['texture_roughness']['score'] = fd_score
-                        troubles['texture_roughness']['level'] = (
-                            '高' if fd_score > 65 else '中' if fd_score > 35 else '低'
-                        )
-                    
-                    trouble_results[region_name] = troubles
-                
-                progress_bar.progress((idx + 1) / len(regions))
-            
-            progress_bar.empty()
-            status_text.empty()
-            
-            # 総合スコア計算
-            if fd_results:
-                # FDを100点満点スコアに変換（FD高い=きめ細かい=高スコア）
-                # FD 2.0 → 0点, FD 3.0 → 100点
-                scores = {}
-                for region, fd in fd_results.items():
-                    score = (fd - 2.0) / 1.0 * 100
-                    scores[region] = max(0, min(100, score))
-                
-                # 重み付き平均（顔の重要部位を重視）
-                weights = {
-                    'forehead': 0.12,
-                    'left_cheek': 0.22,
-                    'right_cheek': 0.22,
-                    'nose': 0.10,
-                    'mouth_area': 0.14,
-                    'chin': 0.10,
-                    'left_under_eye': 0.05,
-                    'right_under_eye': 0.05
-                }
-                
-                overall_score = sum(
-                    scores.get(region, 0) * weight
-                    for region, weight in weights.items()
-                )
-                
-                # グレード判定（高スコア=きめ細かく綺麗な肌）
-                if overall_score >= 85:
-                    grade = 'S (非常にきめ細かい)'
-                    grade_emoji = '🌟'
-                elif overall_score >= 70:
-                    grade = 'A (きめ細かい)'
-                    grade_emoji = '⭐'
-                elif overall_score >= 55:
-                    grade = 'B (普通)'
-                    grade_emoji = '🔵'
-                elif overall_score >= 40:
-                    grade = 'C (やや粗い)'
-                    grade_emoji = '🟡'
-                else:
-                    grade = 'D (粗い・要ケア)'
-                    grade_emoji = '🔴'
-            
-            # Tab 1: 総合評価
-            with tab1:
-                st.subheader("📊 総合評価")
-                
-                col1, col2, col3 = st.columns([2, 2, 3])
-                
-                with col1:
-                    st.markdown("### 元画像")
-                    st.image(cv2.cvtColor(image, cv2.COLOR_BGR2RGB), 
-                            use_container_width=True)
-                
-                with col2:
-                    st.markdown("### スコア")
-                    st.metric(
-                        "総合スコア",
-                        f"{overall_score:.1f}/100",
-                        delta=None
-                    )
-                    st.markdown(f"### {grade_emoji} グレード")
-                    st.markdown(f"## {grade}")
-                
-                with col3:
-                    st.markdown("### 部位別スコア")
-                    for region, score in sorted(scores.items(), key=lambda x: x[1], reverse=True):
-                        region_jp = REGION_NAMES_JP.get(region, region)
-                        st.progress(score / 100)
-                        st.caption(f"{region_jp}: {score:.1f}点")
-            
-            # Tab 2: 部位表示
-            with tab2:
-                st.subheader("🗺️ 検出された部位")
-                
-                # 部位を2列で表示
-                cols_per_row = 3
-                region_items = list(regions.items())
-                
-                for i in range(0, len(region_items), cols_per_row):
-                    cols = st.columns(cols_per_row)
-                    for j, col in enumerate(cols):
-                        idx = i + j
-                        if idx < len(region_items):
-                            region_name, region_data = region_items[idx]
-                            region_img = region_data['image']
-                            
-                            with col:
-                                region_jp = REGION_NAMES_JP.get(region_name, region_name)
-                                if region_img is not None and region_img.size > 0:
-                                    st.image(
-                                        cv2.cvtColor(region_img, cv2.COLOR_BGR2RGB),
-                                        caption=f"{region_jp}",
-                                        use_container_width=True
-                                    )
-                                    if region_name in fd_results:
-                                        st.caption(f"FD: {fd_results[region_name]:.4f}")
-                                        st.caption(f"スコア: {scores.get(region_name, 0):.1f}点")
-            
-            # Tab 3: 詳細分析
-            with tab3:
-                st.subheader("🔍 部位別詳細分析")
-                
-                for region_name in regions.keys():
-                    region_jp = REGION_NAMES_JP.get(region_name, region_name)
-                    
-                    with st.expander(f"📍 {region_jp}"):
-                        if region_name in fd_results:
-                            col1, col2 = st.columns([1, 2])
-                            
-                            with col1:
-                                st.metric("フラクタル次元", f"{fd_results[region_name]:.4f}")
-                                st.metric("スコア", f"{scores.get(region_name, 0):.1f}/100")
-                            
-                            with col2:
-                                if region_name in trouble_results:
-                                    troubles = trouble_results[region_name]
-                                    
-                                    st.markdown("**検出された肌トラブル:**")
-                                    for trouble_key, trouble_data in troubles.items():
-                                        trouble_jp = TROUBLE_NAMES_JP.get(trouble_key, trouble_key)
-                                        level = trouble_data.get('level', '不明')
-                                        score_val = trouble_data.get('score', 0)
-                                        
-                                        level_emoji = '🔴' if level == '高' else '🟡' if level == '中' else '🟢'
-                                        st.write(f"{level_emoji} **{trouble_jp}**: {level} ({score_val:.1f})")
-            
-            # Tab 4: レポート
-            with tab4:
-                st.subheader("📋 総合レポート")
-                
-                report = create_trouble_report(trouble_results, fd_results)
-                st.markdown(report)
-                
-                # レポートダウンロード
-                timestamp = pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')
-                report_filename = f"skin_analysis_report_{timestamp}.md"
-                
-                st.download_button(
-                    label="📥 レポートをダウンロード",
-                    data=report,
-                    file_name=report_filename,
-                    mime="text/markdown"
-                )
     
     # ============================================================
     # 🔬 実験データ収集モード
@@ -6315,277 +5228,556 @@ def app():
         # データマネージャー初期化
         data_manager = ExperimentDataManager()
         
+        # 入力モード選択
+        input_mode = st.radio(
+            "📋 入力モードを選択",
+            ["🚀 簡易モード（研究データ向け）", "📝 詳細モード（全項目入力）"],
+            help="簡易モード: 画像と最低限の評価のみ\n詳細モード: 被験者情報や測定条件も入力",
+            horizontal=True
+        )
+        
         # タブで分割
         data_tab, history_tab = st.tabs(["📝 新規データ収集", "📚 履歴表示"])
         
         with data_tab:
-            st.subheader("📋 被験者情報")
             
-            col1, col2 = st.columns(2)
-            with col1:
-                subject_id = st.text_input("被験者ID", placeholder="例: S001", help="一意のIDを設定")
-                age = st.number_input("年齢", min_value=10, max_value=100, value=25)
-                gender = st.selectbox("性別", ["女性", "男性", "その他"])
-            
-            with col2:
-                skin_type = st.selectbox("肌質", [
-                    "普通肌", "乾燥肌", "脂性肌", "混合肌", "敏感肌"
-                ])
-                measurement_date = st.date_input("測定日")
-                measurement_time = st.time_input("測定時刻")
-            
-            st.markdown("---")
-            st.subheader("🌡️ 測定条件")
-            
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                condition = st.selectbox("肌状態", [
-                    "通常状態",
-                    "洗顔直後（30分以内）",
-                    "保湿クリーム塗布後",
-                    "運動後",
-                    "睡眠不足後",
-                    "その他"
-                ])
-            with col2:
-                temperature = st.number_input("室温 (°C)", min_value=10.0, max_value=40.0, value=22.0, step=0.5)
-            with col3:
-                humidity = st.number_input("湿度 (%)", min_value=0, max_value=100, value=50)
-            
-            st.markdown("---")
-            st.subheader("👁️ 肌状態評価（目視）")
-            
-            st.info("""
-            💡 **評価のポイント:**
-            - 客観的に観察して評価してください
-            - 毎回同じ基準で評価することが重要です
-            - 迷った場合は中間の値（3）を選択
-            """)
-            
-            col1, col2 = st.columns(2)
-            with col1:
-                roughness_score = st.slider(
-                    "肌荒れ度",
-                    min_value=1, max_value=5, value=3,
-                    help="1=非常に滑らか, 5=非常に荒れている"
-                )
-                st.caption("⭐ 非常に滑らか → ⭐⭐⭐⭐⭐ 非常に荒れている")
+            # ============================================
+            # 🚀 簡易モード（研究データ向け）
+            # ============================================
+            if input_mode == "🚀 簡易モード（研究データ向け）":
+                st.info("""
+                💡 **簡易モード**: 顔写真をアップロードするだけでOK！
+                - **画像ID・撮影情報は自動で読み取ります**
+                - フラクタル次元は自動計算されます
+                - 肌トラブルも自動検出されます
+                """)
                 
-                pore_score = st.slider(
-                    "毛穴の目立ち度",
-                    min_value=1, max_value=5, value=3,
-                    help="1=目立たない, 5=非常に目立つ"
-                )
+                # 画像アップロード（最初に）
+                st.subheader("📸 STEP 1: 顔写真アップロード")
                 
-                wrinkle_score = st.slider(
-                    "シワの目立ち度",
-                    min_value=1, max_value=5, value=3,
-                    help="1=目立たない, 5=非常に目立つ"
-                )
-            
-            with col2:
-                dryness_score = st.slider(
-                    "乾燥度",
-                    min_value=1, max_value=5, value=3,
-                    help="1=非常に潤っている, 5=非常に乾燥している"
-                )
-                st.caption("💧 非常に潤い → 🔥🔥🔥🔥🔥 非常に乾燥")
-                
-                redness_score = st.slider(
-                    "赤み・炎症",
-                    min_value=1, max_value=5, value=3,
-                    help="1=なし, 5=強い赤み"
-                )
-                
-                dark_circle_score = st.slider(
-                    "クマの目立ち度",
-                    min_value=1, max_value=5, value=3,
-                    help="1=目立たない, 5=非常に目立つ"
-                )
-            
-            st.markdown("---")
-            st.subheader("📊 客観的測定値")
-            
-            col1, col2 = st.columns(2)
-            with col1:
-                moisture_level = st.number_input(
-                    "肌水分量 (%)",
-                    min_value=0.0, max_value=100.0, value=40.0, step=0.1,
-                    help="肌水分計での測定値（持っている場合）"
-                )
-            with col2:
-                sebum_level = st.number_input(
-                    "皮脂量 (任意)",
-                    min_value=0.0, max_value=100.0, value=50.0, step=0.1,
-                    help="皮脂測定器での測定値（任意）"
-                )
-            
-            st.markdown("---")
-            st.subheader("📸 画像アップロード")
-            
-            # 撮影方式の選択
-            upload_mode = st.radio(
-                "撮影方式",
-                ["🌸 顔全体写真（推奨）", "📷 頬のみ（従来方式）"],
-                help="顔全体写真: 1枚の写真から自動で各部位を抽出\n頬のみ: 左右の頬を個別にアップロード"
-            )
-            
-            face_photo = None
-            left_cheek = None
-            right_cheek = None
-            
-            if upload_mode == "🌸 顔全体写真（推奨）":
-                face_photo = st.file_uploader(
+                face_photo_simple = st.file_uploader(
                     "顔全体の写真",
                     type=['jpg', 'jpeg', 'png'],
-                    key='face_photo',
+                    key='face_photo_simple',
                     help="正面から顔全体が写った写真をアップロード"
                 )
-                if face_photo:
-                    st.info("✅ 顔全体写真から自動で額、両頬、鼻、口周り、顎の各部位を分析します")
+                
+                uploaded_image_simple = None
+                face_detected = False
+                regions_simple = None
+                exif_data = None
+                auto_image_id = ""
+                
+                if face_photo_simple:
+                    # EXIFデータを自動読み取り
+                    exif_data = extract_exif_data(face_photo_simple)
+                    face_photo_simple.seek(0)
+                    
+                    # ファイル名から画像IDを自動生成
+                    auto_image_id = os.path.splitext(exif_data['filename'])[0]
+                    
+                    uploaded_image_simple = read_bgr_from_buffer(face_photo_simple.read())
+                    face_photo_simple.seek(0)
+                    
+                    if uploaded_image_simple is not None:
+                        # 3カラム: 画像、EXIFデータ、顔検出結果
+                        img_col, exif_col, result_col = st.columns([1, 1, 1])
+                        
+                        with img_col:
+                            st.image(cv2.cvtColor(uploaded_image_simple, cv2.COLOR_BGR2RGB),
+                                    caption="📷 アップロードされた顔写真",
+                                    use_container_width=True)
+                        
+                        with exif_col:
+                            st.markdown("**📋 自動読み取り情報:**")
+                            st.write(f"📁 ファイル名: `{exif_data['filename']}`")
+                            if exif_data['image_width'] and exif_data['image_height']:
+                                st.write(f"📐 解像度: {exif_data['image_width']} x {exif_data['image_height']}")
+                            if exif_data['file_size']:
+                                size_kb = exif_data['file_size'] / 1024
+                                st.write(f"💾 ファイルサイズ: {size_kb:.1f} KB")
+                            if exif_data['datetime_original']:
+                                st.write(f"📅 撮影日時: {exif_data['datetime_original']}")
+                            if exif_data['camera_make'] or exif_data['camera_model']:
+                                camera = f"{exif_data['camera_make'] or ''} {exif_data['camera_model'] or ''}".strip()
+                                st.write(f"📷 カメラ: {camera}")
+                            if exif_data['iso']:
+                                st.write(f"🔆 ISO: {exif_data['iso']}")
+                            if not any([exif_data['datetime_original'], exif_data['camera_make']]):
+                                st.caption("⚠️ EXIFデータなし（研究用データセットの可能性）")
+                        
+                        with result_col:
+                            if SKIN_ANALYSIS_AVAILABLE:
+                                with st.spinner("🔍 顔を検出中..."):
+                                    landmarks = detect_face_landmarks(uploaded_image_simple)
+                                    if landmarks is not None:
+                                        face_detected = True
+                                        regions_simple = extract_face_regions(uploaded_image_simple, landmarks)
+                                        st.success(f"✅ 顔検出成功！")
+                                        st.write(f"🔍 検出部位: {len(regions_simple)}箇所")
+                                        
+                                        # 検出部位を表示
+                                        for region_name in regions_simple.keys():
+                                            st.write(f"• {REGION_NAMES_JP.get(region_name, region_name)}")
+                                    else:
+                                        st.error("❌ 顔が検出できませんでした")
+                                        st.info("別の写真をお試しください")
+                
+                st.markdown("---")
+                
+                # 画像ID（自動入力 + 編集可能）
+                st.subheader("📋 STEP 2: データ情報（自動入力済み）")
+                
+                col1, col2 = st.columns([2, 1])
+                with col1:
+                    image_id = st.text_input(
+                        "📁 画像ID", 
+                        value=auto_image_id,
+                        placeholder="例: IMG001, face_001",
+                        help="ファイル名から自動入力されます。必要に応じて編集可能"
+                    )
+                with col2:
+                    data_source = st.selectbox(
+                        "データソース",
+                        ["研究用データセット", "自分で撮影", "インターネット", "その他"],
+                        help="画像の出所"
+                    )
+                
+                st.markdown("---")
+                
+                # 主観評価（任意・折りたたみ）
+                st.subheader("👁️ STEP 3: 主観評価（任意）")
+                with st.expander("主観評価を入力する（クリックで展開）", expanded=False):
+                    st.caption("画像を見て肌の状態を評価してください。入力しない場合は自動検出結果のみ保存されます。")
+                    
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        roughness_simple = st.slider("肌荒れ度", 1, 5, 3, help="1=滑らか, 5=荒れている")
+                        pore_simple = st.slider("毛穴の目立ち", 1, 5, 3, help="1=目立たない, 5=目立つ")
+                    with col2:
+                        dryness_simple = st.slider("乾燥度", 1, 5, 3, help="1=潤い, 5=乾燥")
+                        redness_simple = st.slider("赤み", 1, 5, 3, help="1=なし, 5=強い赤み")
+                    
+                    include_subjective = st.checkbox("主観評価を保存する", value=False)
+                
+                notes_simple = st.text_area("📝 メモ（任意）", placeholder="例: データセットAの001番、表情: 無表情")
+                
+                st.markdown("---")
+                
+                # 保存ボタン
+                st.subheader("💾 STEP 4: データ保存")
+                if st.button("💾 データを保存", type="primary", use_container_width=True, key="save_simple"):
+                    if not image_id:
+                        st.error("❌ 画像IDを入力してください")
+                    elif not face_photo_simple:
+                        st.error("❌ 顔写真をアップロードしてください")
+                    elif not face_detected:
+                        st.error("❌ 顔が検出できませんでした。別の画像をお試しください。")
+                    else:
+                        with st.spinner("🔄 データを処理中..."):
+                            # 簡易データエントリ作成
+                            data_entry = {
+                                'subject_id': image_id,
+                                'timestamp': pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S'),
+                                'data_source': data_source,
+                                'analysis_mode': 'simple_face_full',
+                                'notes': notes_simple
+                            }
+                            
+                            # EXIFデータを追加
+                            if exif_data:
+                                data_entry['original_filename'] = exif_data['filename']
+                                data_entry['image_width'] = exif_data['image_width']
+                                data_entry['image_height'] = exif_data['image_height']
+                                if exif_data['datetime_original']:
+                                    data_entry['photo_datetime'] = exif_data['datetime_original']
+                                if exif_data['camera_make'] or exif_data['camera_model']:
+                                    data_entry['camera'] = f"{exif_data['camera_make'] or ''} {exif_data['camera_model'] or ''}".strip()
+                                if exif_data['iso']:
+                                    data_entry['iso'] = exif_data['iso']
+                            
+                            # 主観評価（任意）
+                            if include_subjective:
+                                data_entry['roughness_score'] = roughness_simple
+                                data_entry['dryness_score'] = dryness_simple
+                                data_entry['pore_score'] = pore_simple
+                                data_entry['redness_score'] = redness_simple
+                            
+                            # FD計算と肌トラブル検出
+                            fd_results = {}
+                            trouble_scores = {}
+                            
+                            for region_name, region_data in regions_simple.items():
+                                region_img = region_data['image']
+                                if region_img is not None and region_img.size > 0:
+                                    # FD計算
+                                    fd_result = calculate_fractal_dimension(region_img)
+                                    if fd_result['fd'] is not None:
+                                        fd_results[region_name] = fd_result['fd']
+                                        data_entry[f'{region_name}_fd'] = fd_result['fd']
+                                    
+                                    # 肌トラブル自動検出
+                                    troubles = detect_skin_troubles(region_img, region_name)
+                                    for trouble_type, trouble_data in troubles.items():
+                                        if isinstance(trouble_data, dict) and 'score' in trouble_data:
+                                            key = f'trouble_{trouble_type}'
+                                            if key not in trouble_scores:
+                                                trouble_scores[key] = []
+                                            trouble_scores[key].append(trouble_data['score'])
+                            
+                            # 肌トラブルスコアの平均を保存
+                            total_trouble = 0
+                            trouble_count = 0
+                            for key, scores in trouble_scores.items():
+                                avg_score = np.mean(scores)
+                                data_entry[key] = avg_score
+                                total_trouble += avg_score
+                                trouble_count += 1
+                            
+                            if trouble_count > 0:
+                                data_entry['trouble_total_score'] = total_trouble / trouble_count
+                            
+                            # 平均FD
+                            if fd_results:
+                                data_entry['average_fd'] = np.mean(list(fd_results.values()))
+                            
+                            # 保存
+                            if 'average_fd' in data_entry and data_manager.save_data(data_entry):
+                                st.success("✅ データを保存しました！")
+                                
+                                # 結果表示
+                                st.subheader("📊 分析結果")
+                                
+                                col1, col2, col3 = st.columns(3)
+                                with col1:
+                                    score = max(0, min(100, (data_entry['average_fd'] - 2.0) / 1.0 * 100))
+                                    st.metric("総合スコア", f"{score:.1f}点")
+                                with col2:
+                                    st.metric("平均FD値", f"{data_entry['average_fd']:.4f}")
+                                with col3:
+                                    if 'trouble_total_score' in data_entry:
+                                        st.metric("トラブルスコア", f"{data_entry['trouble_total_score']:.1f}")
+                                
+                                # 部位別FD
+                                st.markdown("**部位別フラクタル次元:**")
+                                fd_cols = st.columns(4)
+                                for idx, (region, fd) in enumerate(fd_results.items()):
+                                    with fd_cols[idx % 4]:
+                                        st.metric(REGION_NAMES_JP.get(region, region), f"{fd:.4f}")
+                            else:
+                                st.error("❌ データの保存に失敗しました")
+            
+            # ============================================
+            # 📝 詳細モード（従来の全項目入力）
+            # ============================================
             else:
+                # ============================================
+                # STEP 1: 画像アップロード（最初に表示）
+                # ============================================
+                st.subheader("📸 STEP 1: 画像アップロード")
+                
+                st.info("💡 **まず顔写真をアップロードしてください。** 画像を見ながら肌状態を評価できます。")
+                
+                # 撮影方式の選択
+                upload_mode = st.radio(
+                    "撮影方式",
+                    ["🌸 顔全体写真（推奨）", "📷 頬のみ（従来方式）"],
+                    help="顔全体写真: 1枚の写真から自動で各部位を抽出\n頬のみ: 左右の頬を個別にアップロード",
+                    horizontal=True
+                )
+                
+                face_photo = None
+                left_cheek = None
+                right_cheek = None
+                uploaded_image = None  # プレビュー用
+                
+                if upload_mode == "🌸 顔全体写真（推奨）":
+                    face_photo = st.file_uploader(
+                        "顔全体の写真",
+                        type=['jpg', 'jpeg', 'png'],
+                        key='face_photo_detail',
+                        help="正面から顔全体が写った写真をアップロード"
+                    )
+                    if face_photo:
+                        # 画像プレビュー表示
+                        uploaded_image = read_bgr_from_buffer(face_photo.read())
+                        face_photo.seek(0)  # バッファをリセット
+                        
+                        if uploaded_image is not None:
+                            st.success("✅ 顔写真がアップロードされました！この画像を見ながら下の評価を入力してください。")
+                            
+                            # 画像を横に配置（左：画像、右：自動検出結果）
+                            img_col, info_col = st.columns([1, 1])
+                            
+                            with img_col:
+                                st.image(cv2.cvtColor(uploaded_image, cv2.COLOR_BGR2RGB), 
+                                        caption="📷 アップロードされた顔写真", 
+                                        use_container_width=True)
+                            
+                            with info_col:
+                                # 顔検出を試行
+                                if SKIN_ANALYSIS_AVAILABLE:
+                                    landmarks = detect_face_landmarks(uploaded_image)
+                                    if landmarks is not None:
+                                        st.success("✅ 顔が検出されました")
+                                        regions = extract_face_regions(uploaded_image, landmarks)
+                                        st.info(f"🔍 検出部位: {len(regions)}箇所")
+                                        
+                                        # 検出された部位を表示
+                                        region_names = [REGION_NAMES_JP.get(r, r) for r in regions.keys()]
+                                        st.write("検出部位: " + ", ".join(region_names))
+                                    else:
+                                        st.warning("⚠️ 顔が検出できませんでした。別の写真をお試しください。")
+                else:
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        left_cheek = st.file_uploader("左頬の画像", type=['jpg', 'png'], key='left_detail')
+                        if left_cheek:
+                            left_img = read_bgr_from_buffer(left_cheek.read())
+                            left_cheek.seek(0)
+                            if left_img is not None:
+                                st.image(cv2.cvtColor(left_img, cv2.COLOR_BGR2RGB), 
+                                        caption="左頬", use_container_width=True)
+                    with col2:
+                        right_cheek = st.file_uploader("右頬の画像", type=['jpg', 'png'], key='right_detail')
+                        if right_cheek:
+                            right_img = read_bgr_from_buffer(right_cheek.read())
+                            right_cheek.seek(0)
+                            if right_img is not None:
+                                st.image(cv2.cvtColor(right_img, cv2.COLOR_BGR2RGB), 
+                                        caption="右頬", use_container_width=True)
+                
+                st.markdown("---")
+                
+                # ============================================
+                # STEP 2: 被験者情報
+                # ============================================
+                st.subheader("📋 STEP 2: 被験者情報")
+                
                 col1, col2 = st.columns(2)
                 with col1:
-                    left_cheek = st.file_uploader("左頬の画像", type=['jpg', 'png'], key='left')
+                    subject_id = st.text_input("被験者ID", placeholder="例: S001", help="一意のIDを設定")
+                    age = st.number_input("年齢", min_value=10, max_value=100, value=25)
+                    gender = st.selectbox("性別", ["女性", "男性", "その他"])
+                
                 with col2:
-                    right_cheek = st.file_uploader("右頬の画像", type=['jpg', 'png'], key='right')
-            
-            notes = st.text_area("備考・メモ", placeholder="特記事項があれば記入（例：化粧品を変更、体調不良など）")
-            
-            st.markdown("---")
-            
-            # データ保存ボタン
-            if st.button("💾 データを保存", type="primary", use_container_width=True):
-                if not subject_id:
-                    st.error("❌ 被験者IDを入力してください")
-                elif not face_photo and not left_cheek and not right_cheek:
-                    st.error("❌ 画像をアップロードしてください")
+                    skin_type = st.selectbox("肌質", [
+                        "普通肌", "乾燥肌", "脂性肌", "混合肌", "敏感肌"
+                    ])
+                    measurement_date = st.date_input("測定日")
+                    measurement_time = st.time_input("測定時刻")
+                
+                st.markdown("---")
+                
+                # ============================================
+                # STEP 3: 測定条件
+                # ============================================
+                st.subheader("🌡️ STEP 3: 測定条件")
+                
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    condition = st.selectbox("肌状態", [
+                        "通常状態",
+                        "洗顔直後（30分以内）",
+                        "保湿クリーム塗布後",
+                        "運動後",
+                        "睡眠不足後",
+                        "その他"
+                    ])
+                with col2:
+                    temperature = st.number_input("室温 (°C)", min_value=10.0, max_value=40.0, value=22.0, step=0.5)
+                with col3:
+                    humidity = st.number_input("湿度 (%)", min_value=0, max_value=100, value=50)
+                
+                st.markdown("---")
+                
+                # ============================================
+                # STEP 4: 肌状態評価（目視）- 画像を見ながら
+                # ============================================
+                st.subheader("👁️ STEP 4: 肌状態評価（目視）")
+                
+                if face_photo or left_cheek or right_cheek:
+                    st.success("💡 **上の画像を見ながら、以下の項目を評価してください。**")
                 else:
-                    with st.spinner("🔄 データを処理中..."):
-                        # データエントリ作成
-                        data_entry = {
-                            'subject_id': subject_id,
-                            'timestamp': f"{measurement_date} {measurement_time}",
-                            'age': age,
-                            'gender': gender,
-                            'skin_type': skin_type,
-                            'condition': condition,
-                            'temperature': temperature,
-                            'humidity': humidity,
-                            'roughness_score': roughness_score,
-                            'dryness_score': dryness_score,
-                            'pore_score': pore_score,
-                            'wrinkle_score': wrinkle_score,
-                            'redness_score': redness_score,
-                            'dark_circle_score': dark_circle_score,
-                            'moisture_level': moisture_level,
-                            'sebum_level': sebum_level,
-                            'notes': notes
-                        }
-                        
-                        # 顔全体写真モード
-                        if face_photo and SKIN_ANALYSIS_AVAILABLE:
-                            face_img = read_bgr_from_buffer(face_photo.read())
-                            if face_img is not None:
-                                # 顔検出
-                                landmarks = detect_face_landmarks(face_img)
-                                if landmarks is not None:
-                                    # 部位抽出
-                                    regions = extract_face_regions(face_img, landmarks)
-                                    
-                                    # 各部位のFD計算
-                                    fd_results = {}
-                                    for region_name, region_data in regions.items():
-                                        region_img = region_data['image']
-                                        if region_img is not None and region_img.size > 0:
-                                            fd_result = calculate_fractal_dimension(region_img)
-                                            if fd_result['fd'] is not None:
-                                                fd_results[region_name] = fd_result['fd']
-                                                data_entry[f'{region_name}_fd'] = fd_result['fd']
-                                    
-                                    # 左右頬と平均を設定
-                                    if 'left_cheek' in fd_results:
-                                        data_entry['left_cheek_fd'] = fd_results['left_cheek']
-                                    if 'right_cheek' in fd_results:
-                                        data_entry['right_cheek_fd'] = fd_results['right_cheek']
-                                    
-                                    # 平均FD（全部位）
-                                    if fd_results:
-                                        data_entry['average_fd'] = np.mean(list(fd_results.values()))
-                                    
-                                    data_entry['analysis_mode'] = 'face_full'
-                                else:
-                                    st.warning("⚠️ 顔が検出できませんでした。頬のみモードに切り替えてください。")
-                        
-                        # 頬のみモード（従来方式）
-                        elif left_cheek or right_cheek:
-                            # 左頬のFD計算
-                            if left_cheek:
-                                left_img = read_bgr_from_buffer(left_cheek.read())
-                                if left_img is not None:
-                                    left_fd_result = calculate_fractal_dimension(left_img)
-                                    data_entry['left_cheek_fd'] = left_fd_result['fd']
-                                    data_entry['left_cheek_confidence'] = left_fd_result['confidence']
+                    st.warning("⚠️ 画像をアップロードすると、見ながら評価できます。")
+                
+                st.info("""
+                **評価のポイント:**
+                - 客観的に観察して評価してください
+                - 毎回同じ基準で評価することが重要です
+                - 迷った場合は中間の値（3）を選択
+                """)
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    roughness_score = st.slider(
+                        "肌荒れ度",
+                        min_value=1, max_value=5, value=3,
+                        help="1=非常に滑らか, 5=非常に荒れている"
+                    )
+                    st.caption("⭐ 非常に滑らか → ⭐⭐⭐⭐⭐ 非常に荒れている")
+                    
+                    pore_score = st.slider(
+                        "毛穴の目立ち度",
+                        min_value=1, max_value=5, value=3,
+                        help="1=目立たない, 5=非常に目立つ"
+                    )
+                    
+                    wrinkle_score = st.slider(
+                        "シワの目立ち度",
+                        min_value=1, max_value=5, value=3,
+                        help="1=目立たない, 5=非常に目立つ"
+                    )
+                
+                with col2:
+                    dryness_score = st.slider(
+                        "乾燥度",
+                        min_value=1, max_value=5, value=3,
+                        help="1=非常に潤っている, 5=非常に乾燥している"
+                    )
+                    st.caption("💧 非常に潤い → 🔥🔥🔥🔥🔥 非常に乾燥")
+                    
+                    redness_score = st.slider(
+                        "赤み・炎症",
+                        min_value=1, max_value=5, value=3,
+                        help="1=なし, 5=強い赤み"
+                    )
+                    
+                    dark_circle_score = st.slider(
+                        "クマの目立ち度",
+                        min_value=1, max_value=5, value=3,
+                        help="1=目立たない, 5=非常に目立つ"
+                    )
+                
+                st.markdown("---")
+                
+                # ============================================
+                # STEP 5: 客観的測定値（オプション）
+                # ============================================
+                st.subheader("📊 STEP 5: 客観的測定値（オプション）")
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    moisture_level = st.number_input(
+                        "肌水分量 (%)",
+                        min_value=0.0, max_value=100.0, value=40.0, step=0.1,
+                        help="肌水分計での測定値（持っている場合）"
+                    )
+                with col2:
+                    sebum_level = st.number_input(
+                        "皮脂量 (任意)",
+                        min_value=0.0, max_value=100.0, value=50.0, step=0.1,
+                        help="皮脂測定器での測定値（任意）"
+                    )
+                
+                notes = st.text_area("備考・メモ", placeholder="特記事項があれば記入（例：化粧品を変更、体調不良など）", key="notes_detail")
+                
+                st.markdown("---")
+                
+                # ============================================
+                # STEP 6: データ保存
+                # ============================================
+                st.subheader("💾 STEP 6: データ保存")
+                
+                # データ保存ボタン
+                if st.button("💾 データを保存", type="primary", use_container_width=True, key="save_detail"):
+                    if not subject_id:
+                        st.error("❌ 被験者IDを入力してください")
+                    elif not face_photo and not left_cheek and not right_cheek:
+                        st.error("❌ 画像をアップロードしてください")
+                    else:
+                        with st.spinner("🔄 データを処理中..."):
+                            # データエントリ作成
+                            data_entry = {
+                                'subject_id': subject_id,
+                                'timestamp': f"{measurement_date} {measurement_time}",
+                                'age': age,
+                                'gender': gender,
+                                'skin_type': skin_type,
+                                'condition': condition,
+                                'temperature': temperature,
+                                'humidity': humidity,
+                                'roughness_score': roughness_score,
+                                'dryness_score': dryness_score,
+                                'pore_score': pore_score,
+                                'wrinkle_score': wrinkle_score,
+                                'redness_score': redness_score,
+                                'dark_circle_score': dark_circle_score,
+                                'moisture_level': moisture_level,
+                                'sebum_level': sebum_level,
+                                'notes': notes
+                            }
                             
-                            # 右頬のFD計算
-                            if right_cheek:
-                                right_cheek.seek(0)
-                                right_img = read_bgr_from_buffer(right_cheek.read())
-                                if right_img is not None:
-                                    right_fd_result = calculate_fractal_dimension(right_img)
-                                    data_entry['right_cheek_fd'] = right_fd_result['fd']
-                                    data_entry['right_cheek_confidence'] = right_fd_result['confidence']
+                            # 顔全体写真モード
+                            if face_photo and SKIN_ANALYSIS_AVAILABLE:
+                                face_img = read_bgr_from_buffer(face_photo.read())
+                                if face_img is not None:
+                                    # 顔検出
+                                    landmarks = detect_face_landmarks(face_img)
+                                    if landmarks is not None:
+                                        # 部位抽出
+                                        regions = extract_face_regions(face_img, landmarks)
+                                        
+                                        # 各部位のFD計算
+                                        fd_results = {}
+                                        trouble_scores = {}
+                                        
+                                        for region_name, region_data in regions.items():
+                                            region_img = region_data['image']
+                                            if region_img is not None and region_img.size > 0:
+                                                fd_result = calculate_fractal_dimension(region_img)
+                                                if fd_result['fd'] is not None:
+                                                    fd_results[region_name] = fd_result['fd']
+                                                    data_entry[f'{region_name}_fd'] = fd_result['fd']
+                                                
+                                                troubles = detect_skin_troubles(region_img, region_name)
+                                                for trouble_type, trouble_data in troubles.items():
+                                                    if isinstance(trouble_data, dict) and 'score' in trouble_data:
+                                                        key = f'trouble_{trouble_type}'
+                                                        if key not in trouble_scores:
+                                                            trouble_scores[key] = []
+                                                        trouble_scores[key].append(trouble_data['score'])
+                                        
+                                        for key, scores in trouble_scores.items():
+                                            data_entry[key] = np.mean(scores)
+                                        
+                                        if fd_results:
+                                            data_entry['average_fd'] = np.mean(list(fd_results.values()))
+                                        
+                                        data_entry['analysis_mode'] = 'detail_face_full'
+                                    else:
+                                        st.warning("⚠️ 顔が検出できませんでした")
                             
-                            data_entry['analysis_mode'] = 'cheek_only'
-                        
-                        # 平均FD計算（頬のみモード用）
-                        if 'average_fd' not in data_entry:
-                            if 'left_cheek_fd' in data_entry and 'right_cheek_fd' in data_entry:
-                                data_entry['average_fd'] = (data_entry['left_cheek_fd'] + data_entry['right_cheek_fd']) / 2
-                            elif 'left_cheek_fd' in data_entry:
-                                data_entry['average_fd'] = data_entry['left_cheek_fd']
-                            elif 'right_cheek_fd' in data_entry:
-                                data_entry['average_fd'] = data_entry['right_cheek_fd']
-                        
-                        # 保存
-                        if 'average_fd' in data_entry and data_manager.save_data(data_entry):
-                            st.success("✅ データを保存しました！")
-                            
-                            # 結果表示
-                            st.subheader("📊 測定結果")
-                            
-                            if data_entry.get('analysis_mode') == 'face_full':
-                                # 顔全体モードの結果表示
-                                st.markdown("**各部位のFD値:**")
-                                fd_cols = st.columns(4)
-                                col_idx = 0
-                                for key, value in data_entry.items():
-                                    if key.endswith('_fd') and key != 'average_fd':
-                                        region_name = key.replace('_fd', '')
-                                        region_jp = REGION_NAMES_JP.get(region_name, region_name)
-                                        with fd_cols[col_idx % 4]:
-                                            st.metric(region_jp, f"{value:.4f}")
-                                        col_idx += 1
+                            # 頬のみモード
+                            elif left_cheek or right_cheek:
+                                if left_cheek:
+                                    left_img = read_bgr_from_buffer(left_cheek.read())
+                                    if left_img is not None:
+                                        left_fd = calculate_fractal_dimension(left_img)
+                                        data_entry['left_cheek_fd'] = left_fd['fd']
                                 
-                                st.markdown("---")
-                                st.metric("📊 全部位平均FD", f"{data_entry['average_fd']:.4f}")
+                                if right_cheek:
+                                    right_cheek.seek(0)
+                                    right_img = read_bgr_from_buffer(right_cheek.read())
+                                    if right_img is not None:
+                                        right_fd = calculate_fractal_dimension(right_img)
+                                        data_entry['right_cheek_fd'] = right_fd['fd']
+                                
+                                if 'left_cheek_fd' in data_entry and 'right_cheek_fd' in data_entry:
+                                    data_entry['average_fd'] = (data_entry['left_cheek_fd'] + data_entry['right_cheek_fd']) / 2
+                                elif 'left_cheek_fd' in data_entry:
+                                    data_entry['average_fd'] = data_entry['left_cheek_fd']
+                                elif 'right_cheek_fd' in data_entry:
+                                    data_entry['average_fd'] = data_entry['right_cheek_fd']
+                                
+                                data_entry['analysis_mode'] = 'detail_cheek_only'
+                            
+                            # 保存
+                            if 'average_fd' in data_entry and data_manager.save_data(data_entry):
+                                st.success("✅ データを保存しました！")
+                                st.metric("平均FD値", f"{data_entry['average_fd']:.4f}")
                             else:
-                                # 頬のみモードの結果表示
-                                col1, col2, col3 = st.columns(3)
-                                
-                                if 'left_cheek_fd' in data_entry:
-                                    with col1:
-                                        st.metric("左頬 FD", f"{data_entry['left_cheek_fd']:.4f}")
-                                
-                                if 'right_cheek_fd' in data_entry:
-                                    with col2:
-                                        st.metric("右頬 FD", f"{data_entry['right_cheek_fd']:.4f}")
-                                
-                                if 'average_fd' in data_entry:
-                                    with col3:
-                                        st.metric("平均 FD", f"{data_entry['average_fd']:.4f}")
-                        else:
-                            st.error("❌ データの保存に失敗しました。画像を確認してください。")
+                                st.error("❌ データの保存に失敗しました")
         
         with history_tab:
             st.subheader("📚 収集済みデータ")
@@ -6664,9 +5856,11 @@ def app():
             return
         
         # タブで分割
-        summary_tab, correlation_tab, scatter_tab, export_tab = st.tabs([
+        summary_tab, correlation_tab, regression_tab, trouble_tab, scatter_tab, export_tab = st.tabs([
             "📋 サマリー",
             "🔗 相関分析",
+            "📈 回帰分析（論文用）",
+            "🔬 肌トラブル分析",
             "📊 散布図",
             "📥 エクスポート"
         ])
@@ -6745,6 +5939,368 @@ def app():
                 fig = create_correlation_heatmap(correlations)
                 st.pyplot(fig)
         
+        # ============================================
+        # 📈 回帰分析タブ（論文用グラフ）
+        # ============================================
+        with regression_tab:
+            st.subheader("📈 最小二乗法による回帰分析（論文用グラフ）")
+            
+            st.markdown("""
+            ### 📖 目的
+            フラクタル次元（FD値）と肌の荒れ具合の関係性を、**最小二乗法**による回帰直線で可視化します。
+            
+            **研究仮説:**
+            - X軸: 肌トラブルスコア（肌荒れの程度）
+            - Y軸: フラクタル次元（FD値）
+            - 予想: 負の相関（肌荒れが多い → FD値が低い）
+            """)
+            
+            if 'average_fd' not in df.columns:
+                st.error("フラクタル次元データがありません")
+            else:
+                # 回帰分析に使う変数の選択
+                st.markdown("### 📊 分析変数の選択")
+                
+                # 利用可能な変数
+                available_vars = {}
+                
+                # 主観評価スコア
+                subjective_vars = {
+                    'roughness_score': '肌荒れ度（主観）',
+                    'dryness_score': '乾燥度（主観）',
+                    'pore_score': '毛穴（主観）',
+                    'redness_score': '赤み（主観）'
+                }
+                
+                # 自動検出スコア
+                auto_vars = {
+                    'trouble_pore_visibility': '毛穴の目立ち（自動）',
+                    'trouble_wrinkles': 'シワ（自動）',
+                    'trouble_color_unevenness': '色ムラ（自動）',
+                    'trouble_redness_acne': 'ニキビ・赤み（自動）',
+                    'trouble_oiliness': 'テカリ（自動）',
+                    'trouble_total_score': '肌トラブル総合（自動）'
+                }
+                
+                for key, name in {**subjective_vars, **auto_vars}.items():
+                    if key in df.columns and df[key].notna().sum() >= 3:
+                        available_vars[key] = name
+                
+                if not available_vars:
+                    st.warning("⚠️ 回帰分析に必要なデータが不足しています（最低3件必要）")
+                else:
+                    selected_x = st.selectbox(
+                        "X軸（肌の状態指標）",
+                        options=list(available_vars.keys()),
+                        format_func=lambda x: available_vars[x],
+                        help="肌荒れの指標となる変数を選択"
+                    )
+                    
+                    # 回帰分析実行
+                    valid_data = df[['average_fd', selected_x]].dropna()
+                    
+                    if len(valid_data) < 3:
+                        st.warning(f"⚠️ {available_vars[selected_x]}のデータが不足しています")
+                    else:
+                        x = valid_data[selected_x].values
+                        y = valid_data['average_fd'].values
+                        
+                        # 最小二乗法で回帰直線を計算
+                        slope, intercept = np.polyfit(x, y, 1)
+                        y_pred = slope * x + intercept
+                        
+                        # 相関係数とp値
+                        from scipy import stats
+                        r, p_value = stats.pearsonr(x, y)
+                        
+                        # 決定係数 R²
+                        ss_res = np.sum((y - y_pred) ** 2)
+                        ss_tot = np.sum((y - np.mean(y)) ** 2)
+                        r_squared = 1 - (ss_res / ss_tot)
+                        
+                        # 標準誤差
+                        n = len(x)
+                        se = np.sqrt(ss_res / (n - 2))
+                        
+                        # グラフ作成
+                        st.markdown("### 📉 回帰直線グラフ（論文用）")
+                        
+                        fig, ax = plt.subplots(figsize=(10, 8))
+                        
+                        # 散布図
+                        ax.scatter(x, y, s=100, alpha=0.7, color='steelblue', 
+                                  edgecolors='darkblue', linewidth=1.5, label='データ点')
+                        
+                        # 回帰直線
+                        x_line = np.linspace(x.min(), x.max(), 100)
+                        y_line = slope * x_line + intercept
+                        ax.plot(x_line, y_line, 'r-', linewidth=2.5, 
+                               label=f'回帰直線: y = {slope:.4f}x + {intercept:.4f}')
+                        
+                        # 95%信頼区間（簡易版）
+                        se_line = se * np.sqrt(1/n + (x_line - np.mean(x))**2 / np.sum((x - np.mean(x))**2))
+                        ax.fill_between(x_line, y_line - 1.96*se_line, y_line + 1.96*se_line, 
+                                        color='red', alpha=0.1, label='95%信頼区間')
+                        
+                        # 軸ラベル
+                        ax.set_xlabel(available_vars[selected_x], fontsize=14, fontweight='bold')
+                        ax.set_ylabel('フラクタル次元 (FD)', fontsize=14, fontweight='bold')
+                        ax.set_title(f'フラクタル次元 vs {available_vars[selected_x]}\n最小二乗法による回帰分析', 
+                                    fontsize=16, fontweight='bold', pad=15)
+                        
+                        # グリッド
+                        ax.grid(True, alpha=0.3, linestyle='--')
+                        
+                        # 統計情報のテキストボックス
+                        textstr = '\n'.join([
+                            f'n = {n}',
+                            f'r = {r:.4f}',
+                            f'R² = {r_squared:.4f}',
+                            f'p = {p_value:.4f}',
+                            f'傾き = {slope:.4f}',
+                            f'切片 = {intercept:.4f}'
+                        ])
+                        props = dict(boxstyle='round', facecolor='wheat', alpha=0.8)
+                        ax.text(0.02, 0.98, textstr, transform=ax.transAxes, fontsize=11,
+                               verticalalignment='top', bbox=props, fontfamily='monospace')
+                        
+                        # 凡例
+                        ax.legend(loc='lower left', fontsize=10)
+                        
+                        plt.tight_layout()
+                        st.pyplot(fig)
+                        
+                        # 統計結果の詳細
+                        st.markdown("### 📊 回帰分析の結果")
+                        
+                        col1, col2, col3, col4 = st.columns(4)
+                        with col1:
+                            st.metric("サンプル数 (n)", n)
+                        with col2:
+                            st.metric("相関係数 (r)", f"{r:.4f}")
+                        with col3:
+                            st.metric("決定係数 (R²)", f"{r_squared:.4f}")
+                        with col4:
+                            significance = "✅ 有意" if p_value < 0.05 else "❌ 非有意"
+                            st.metric("p値", f"{p_value:.4f}", significance)
+                        
+                        # 回帰式
+                        st.markdown(f"""
+                        ### 📐 回帰式
+                        ```
+                        FD = {slope:.4f} × {available_vars[selected_x]} + {intercept:.4f}
+                        ```
+                        """)
+                        
+                        # 解釈
+                        st.markdown("### 💡 結果の解釈")
+                        
+                        if p_value < 0.05:
+                            if slope < 0:
+                                st.success(f"""
+                                ✅ **統計的に有意な負の相関が見られました（p < 0.05）**
+                                
+                                - 傾き: {slope:.4f}（負）
+                                - 解釈: **{available_vars[selected_x]}が高いほど、フラクタル次元が低い**
+                                - つまり: 肌トラブルが多いほど、肌のきめが粗い傾向がある
+                                
+                                これは「FD値が高い=肌状態が良い」という仮説を**支持**します。
+                                """)
+                            else:
+                                st.warning(f"""
+                                ⚠️ **統計的に有意な正の相関が見られました**
+                                
+                                - 傾き: {slope:.4f}（正）
+                                - 解釈: {available_vars[selected_x]}が高いほど、フラクタル次元も高い
+                                
+                                これは予想と逆の結果です。データの確認をお勧めします。
+                                """)
+                        else:
+                            st.info(f"""
+                            💡 **統計的に有意な相関は見られませんでした（p ≥ 0.05）**
+                            
+                            - p値: {p_value:.4f}
+                            - 解釈: 現在のデータでは明確な関係性を結論づけることができません
+                            
+                            考えられる理由:
+                            - サンプル数が少ない（現在 n={n}）
+                            - データのばらつきが大きい
+                            
+                            → より多くのデータを収集してください
+                            """)
+                        
+                        # グラフのダウンロード
+                        st.markdown("### 📥 グラフのダウンロード")
+                        
+                        # 高解像度でグラフを保存
+                        from io import BytesIO
+                        buf = BytesIO()
+                        fig.savefig(buf, format='png', dpi=300, bbox_inches='tight')
+                        buf.seek(0)
+                        
+                        st.download_button(
+                            "📥 グラフをダウンロード（PNG, 300dpi）",
+                            data=buf,
+                            file_name=f"regression_FD_vs_{selected_x}_{pd.Timestamp.now().strftime('%Y%m%d')}.png",
+                            mime="image/png"
+                        )
+        
+        with trouble_tab:
+            st.subheader("🔬 フラクタル次元と肌トラブルの関係分析")
+            
+            st.markdown("""
+            ### 📖 分析の目的
+            フラクタル次元（FD）と画像解析で自動検出した肌トラブルの関係を明らかにします。
+            
+            **仮説:**
+            - FD値が高い（3.0に近い）= 肌のきめが細かい = 肌トラブルが少ない
+            - FD値が低い（2.0に近い）= 肌のきめが粗い = 肌トラブルが多い
+            
+            → つまり、FDと肌トラブルスコアには**負の相関**が期待される
+            """)
+            
+            # 肌トラブル自動検出データがあるか確認
+            trouble_cols = [col for col in df.columns if col.startswith('trouble_')]
+            
+            if not trouble_cols:
+                st.warning("""
+                ⚠️ **肌トラブル自動検出データがありません**
+                
+                新しくデータを収集すると、自動で肌トラブルスコアも保存されます。
+                「🔬 実験データ収集」モードで顔全体写真をアップロードしてデータを収集してください。
+                """)
+            else:
+                st.success(f"✅ {len(trouble_cols)}種類の肌トラブルデータを検出")
+                
+                # 肌トラブルスコアの概要
+                st.markdown("### 📊 肌トラブルスコアの概要")
+                
+                trouble_summary = []
+                for col in trouble_cols:
+                    if col in df.columns:
+                        values = df[col].dropna()
+                        if len(values) > 0:
+                            trouble_name = {
+                                'trouble_pore_visibility': '毛穴の目立ち',
+                                'trouble_wrinkles': 'シワ',
+                                'trouble_color_unevenness': '色ムラ・くすみ',
+                                'trouble_redness_acne': 'ニキビ・赤み',
+                                'trouble_dark_circles': 'クマ',
+                                'trouble_oiliness': 'テカリ',
+                                'trouble_total_score': '総合トラブルスコア'
+                            }.get(col, col)
+                            
+                            trouble_summary.append({
+                                '肌トラブル': trouble_name,
+                                '平均スコア': f"{values.mean():.2f}",
+                                '標準偏差': f"{values.std():.2f}",
+                                '最小': f"{values.min():.2f}",
+                                '最大': f"{values.max():.2f}",
+                                'データ数': len(values)
+                            })
+                
+                if trouble_summary:
+                    summary_df = pd.DataFrame(trouble_summary)
+                    st.dataframe(summary_df, use_container_width=True, hide_index=True)
+                
+                # FDと肌トラブルの相関分析
+                st.markdown("### 🔗 FDと肌トラブルの相関")
+                
+                if 'average_fd' in df.columns:
+                    from scipy import stats
+                    
+                    trouble_correlations = []
+                    for col in trouble_cols:
+                        if col in df.columns:
+                            valid_data = df[['average_fd', col]].dropna()
+                            if len(valid_data) >= 3:
+                                r, p_value = stats.pearsonr(valid_data['average_fd'], valid_data[col])
+                                
+                                trouble_name = {
+                                    'trouble_pore_visibility': '毛穴の目立ち',
+                                    'trouble_wrinkles': 'シワ',
+                                    'trouble_color_unevenness': '色ムラ・くすみ',
+                                    'trouble_redness_acne': 'ニキビ・赤み',
+                                    'trouble_dark_circles': 'クマ',
+                                    'trouble_oiliness': 'テカリ',
+                                    'trouble_total_score': '総合トラブルスコア'
+                                }.get(col, col)
+                                
+                                # 相関の解釈
+                                if r < -0.7:
+                                    interpretation = "🟢 強い負の相関（FD高→トラブル少）"
+                                elif r < -0.4:
+                                    interpretation = "🟡 中程度の負の相関"
+                                elif r < -0.2:
+                                    interpretation = "🟠 弱い負の相関"
+                                elif r < 0.2:
+                                    interpretation = "⚪ 相関なし"
+                                elif r < 0.4:
+                                    interpretation = "🔴 弱い正の相関（予想外）"
+                                else:
+                                    interpretation = "🔴 正の相関（予想外）"
+                                
+                                significance = "**" if p_value < 0.01 else "*" if p_value < 0.05 else ""
+                                
+                                trouble_correlations.append({
+                                    '肌トラブル': trouble_name,
+                                    '相関係数 (r)': f"{r:.4f}{significance}",
+                                    'p値': f"{p_value:.6f}",
+                                    '有意性': '✅' if p_value < 0.05 else '❌',
+                                    '解釈': interpretation,
+                                    'n': len(valid_data)
+                                })
+                    
+                    if trouble_correlations:
+                        corr_df = pd.DataFrame(trouble_correlations)
+                        st.dataframe(corr_df, use_container_width=True, hide_index=True)
+                        
+                        st.caption("* p < 0.05（有意）, ** p < 0.01（高度に有意）")
+                        
+                        # 研究への示唆
+                        st.markdown("### 💡 研究への示唆")
+                        
+                        significant_negative = [row for row in trouble_correlations 
+                                               if float(row['相関係数 (r)'].rstrip('*')) < -0.2 and '✅' in row['有意性']]
+                        
+                        if significant_negative:
+                            st.success(f"""
+                            ✅ **仮説を支持する結果が見つかりました！**
+                            
+                            以下の肌トラブルとFDに有意な負の相関があります:
+                            {', '.join([row['肌トラブル'] for row in significant_negative])}
+                            
+                            → フラクタル次元が高いほど、これらの肌トラブルが少ない傾向があります。
+                            → これは「FD値が高い=肌のきめが細かい=肌状態が良い」という仮説を支持します。
+                            """)
+                        else:
+                            st.info("""
+                            💡 現在のデータでは明確な相関は見られませんでした。
+                            
+                            考えられる理由:
+                            - データ数が不足している
+                            - 被験者の肌状態のバリエーションが少ない
+                            - 測定条件のばらつき
+                            
+                            → より多くのデータを収集して分析を継続してください。
+                            """)
+                        
+                        # 散布図表示
+                        st.markdown("### 📊 FD vs 肌トラブルスコア 散布図")
+                        
+                        if 'trouble_total_score' in df.columns:
+                            fig = create_scatter_plot(
+                                df,
+                                'trouble_total_score',
+                                'average_fd',
+                                '肌トラブル総合スコア',
+                                'フラクタル次元',
+                                'フラクタル次元 vs 肌トラブル総合スコア'
+                            )
+                            st.pyplot(fig)
+                    else:
+                        st.warning("相関分析に十分なデータがありません（最低3件必要）")
+        
         with scatter_tab:
             st.subheader("📊 散布図分析")
             
@@ -6754,15 +6310,23 @@ def app():
             
             # 散布図作成する項目を選択
             scatter_options = {
-                'roughness_score': '肌荒れ度',
-                'dryness_score': '乾燥度',
-                'pore_score': '毛穴',
-                'wrinkle_score': 'シワ',
-                'redness_score': '赤み',
-                'dark_circle_score': 'クマ',
+                'roughness_score': '肌荒れ度（主観）',
+                'dryness_score': '乾燥度（主観）',
+                'pore_score': '毛穴（主観）',
+                'wrinkle_score': 'シワ（主観）',
+                'redness_score': '赤み（主観）',
+                'dark_circle_score': 'クマ（主観）',
                 'moisture_level': '水分量',
                 'sebum_level': '皮脂量',
-                'age': '年齢'
+                'age': '年齢',
+                # 肌トラブル自動検出結果
+                'trouble_pore_visibility': '毛穴の目立ち（自動検出）',
+                'trouble_wrinkles': 'シワ（自動検出）',
+                'trouble_color_unevenness': '色ムラ・くすみ（自動検出）',
+                'trouble_redness_acne': 'ニキビ・赤み（自動検出）',
+                'trouble_dark_circles': 'クマ（自動検出）',
+                'trouble_oiliness': 'テカリ（自動検出）',
+                'trouble_total_score': '肌トラブル総合スコア（自動検出）'
             }
             
             available_options = {k: v for k, v in scatter_options.items() if k in df.columns}
