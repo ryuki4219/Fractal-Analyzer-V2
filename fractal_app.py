@@ -6423,11 +6423,32 @@ def app():
             st.markdown("---")
             st.subheader("📸 画像アップロード")
             
-            col1, col2 = st.columns(2)
-            with col1:
-                left_cheek = st.file_uploader("左頬の画像", type=['jpg', 'png'], key='left')
-            with col2:
-                right_cheek = st.file_uploader("右頬の画像", type=['jpg', 'png'], key='right')
+            # 撮影方式の選択
+            upload_mode = st.radio(
+                "撮影方式",
+                ["🌸 顔全体写真（推奨）", "📷 頬のみ（従来方式）"],
+                help="顔全体写真: 1枚の写真から自動で各部位を抽出\n頬のみ: 左右の頬を個別にアップロード"
+            )
+            
+            face_photo = None
+            left_cheek = None
+            right_cheek = None
+            
+            if upload_mode == "🌸 顔全体写真（推奨）":
+                face_photo = st.file_uploader(
+                    "顔全体の写真",
+                    type=['jpg', 'jpeg', 'png'],
+                    key='face_photo',
+                    help="正面から顔全体が写った写真をアップロード"
+                )
+                if face_photo:
+                    st.info("✅ 顔全体写真から自動で額、両頬、鼻、口周り、顎の各部位を分析します")
+            else:
+                col1, col2 = st.columns(2)
+                with col1:
+                    left_cheek = st.file_uploader("左頬の画像", type=['jpg', 'png'], key='left')
+                with col2:
+                    right_cheek = st.file_uploader("右頬の画像", type=['jpg', 'png'], key='right')
             
             notes = st.text_area("備考・メモ", placeholder="特記事項があれば記入（例：化粧品を変更、体調不良など）")
             
@@ -6437,6 +6458,8 @@ def app():
             if st.button("💾 データを保存", type="primary", use_container_width=True):
                 if not subject_id:
                     st.error("❌ 被験者IDを入力してください")
+                elif not face_photo and not left_cheek and not right_cheek:
+                    st.error("❌ 画像をアップロードしてください")
                 else:
                     with st.spinner("🔄 データを処理中..."):
                         # データエントリ作成
@@ -6460,52 +6483,109 @@ def app():
                             'notes': notes
                         }
                         
-                        # 左頬のFD計算
-                        if left_cheek:
-                            left_img = read_bgr_from_buffer(left_cheek.read())
-                            if left_img is not None:
-                                left_fd_result = calculate_fractal_dimension(left_img)
-                                data_entry['left_cheek_fd'] = left_fd_result['fd']
-                                data_entry['left_cheek_confidence'] = left_fd_result['confidence']
+                        # 顔全体写真モード
+                        if face_photo and SKIN_ANALYSIS_AVAILABLE:
+                            face_img = read_bgr_from_buffer(face_photo.read())
+                            if face_img is not None:
+                                # 顔検出
+                                landmarks = detect_face_landmarks(face_img)
+                                if landmarks is not None:
+                                    # 部位抽出
+                                    regions = extract_face_regions(face_img, landmarks)
+                                    
+                                    # 各部位のFD計算
+                                    fd_results = {}
+                                    for region_name, region_data in regions.items():
+                                        region_img = region_data['image']
+                                        if region_img is not None and region_img.size > 0:
+                                            fd_result = calculate_fractal_dimension(region_img)
+                                            if fd_result['fd'] is not None:
+                                                fd_results[region_name] = fd_result['fd']
+                                                data_entry[f'{region_name}_fd'] = fd_result['fd']
+                                    
+                                    # 左右頬と平均を設定
+                                    if 'left_cheek' in fd_results:
+                                        data_entry['left_cheek_fd'] = fd_results['left_cheek']
+                                    if 'right_cheek' in fd_results:
+                                        data_entry['right_cheek_fd'] = fd_results['right_cheek']
+                                    
+                                    # 平均FD（全部位）
+                                    if fd_results:
+                                        data_entry['average_fd'] = np.mean(list(fd_results.values()))
+                                    
+                                    data_entry['analysis_mode'] = 'face_full'
+                                else:
+                                    st.warning("⚠️ 顔が検出できませんでした。頬のみモードに切り替えてください。")
                         
-                        # 右頬のFD計算
-                        if right_cheek:
-                            right_cheek.seek(0)
-                            right_img = read_bgr_from_buffer(right_cheek.read())
-                            if right_img is not None:
-                                right_fd_result = calculate_fractal_dimension(right_img)
-                                data_entry['right_cheek_fd'] = right_fd_result['fd']
-                                data_entry['right_cheek_confidence'] = right_fd_result['confidence']
+                        # 頬のみモード（従来方式）
+                        elif left_cheek or right_cheek:
+                            # 左頬のFD計算
+                            if left_cheek:
+                                left_img = read_bgr_from_buffer(left_cheek.read())
+                                if left_img is not None:
+                                    left_fd_result = calculate_fractal_dimension(left_img)
+                                    data_entry['left_cheek_fd'] = left_fd_result['fd']
+                                    data_entry['left_cheek_confidence'] = left_fd_result['confidence']
+                            
+                            # 右頬のFD計算
+                            if right_cheek:
+                                right_cheek.seek(0)
+                                right_img = read_bgr_from_buffer(right_cheek.read())
+                                if right_img is not None:
+                                    right_fd_result = calculate_fractal_dimension(right_img)
+                                    data_entry['right_cheek_fd'] = right_fd_result['fd']
+                                    data_entry['right_cheek_confidence'] = right_fd_result['confidence']
+                            
+                            data_entry['analysis_mode'] = 'cheek_only'
                         
-                        # 平均FD
-                        if 'left_cheek_fd' in data_entry and 'right_cheek_fd' in data_entry:
-                            data_entry['average_fd'] = (data_entry['left_cheek_fd'] + data_entry['right_cheek_fd']) / 2
-                        elif 'left_cheek_fd' in data_entry:
-                            data_entry['average_fd'] = data_entry['left_cheek_fd']
-                        elif 'right_cheek_fd' in data_entry:
-                            data_entry['average_fd'] = data_entry['right_cheek_fd']
+                        # 平均FD計算（頬のみモード用）
+                        if 'average_fd' not in data_entry:
+                            if 'left_cheek_fd' in data_entry and 'right_cheek_fd' in data_entry:
+                                data_entry['average_fd'] = (data_entry['left_cheek_fd'] + data_entry['right_cheek_fd']) / 2
+                            elif 'left_cheek_fd' in data_entry:
+                                data_entry['average_fd'] = data_entry['left_cheek_fd']
+                            elif 'right_cheek_fd' in data_entry:
+                                data_entry['average_fd'] = data_entry['right_cheek_fd']
                         
                         # 保存
-                        if data_manager.save_data(data_entry):
+                        if 'average_fd' in data_entry and data_manager.save_data(data_entry):
                             st.success("✅ データを保存しました！")
                             
                             # 結果表示
                             st.subheader("📊 測定結果")
-                            col1, col2, col3 = st.columns(3)
                             
-                            if 'left_cheek_fd' in data_entry:
-                                with col1:
-                                    st.metric("左頬 FD", f"{data_entry['left_cheek_fd']:.4f}")
-                            
-                            if 'right_cheek_fd' in data_entry:
-                                with col2:
-                                    st.metric("右頬 FD", f"{data_entry['right_cheek_fd']:.4f}")
-                            
-                            if 'average_fd' in data_entry:
-                                with col3:
-                                    st.metric("平均 FD", f"{data_entry['average_fd']:.4f}")
+                            if data_entry.get('analysis_mode') == 'face_full':
+                                # 顔全体モードの結果表示
+                                st.markdown("**各部位のFD値:**")
+                                fd_cols = st.columns(4)
+                                col_idx = 0
+                                for key, value in data_entry.items():
+                                    if key.endswith('_fd') and key != 'average_fd':
+                                        region_name = key.replace('_fd', '')
+                                        region_jp = REGION_NAMES_JP.get(region_name, region_name)
+                                        with fd_cols[col_idx % 4]:
+                                            st.metric(region_jp, f"{value:.4f}")
+                                        col_idx += 1
+                                
+                                st.markdown("---")
+                                st.metric("📊 全部位平均FD", f"{data_entry['average_fd']:.4f}")
+                            else:
+                                # 頬のみモードの結果表示
+                                col1, col2, col3 = st.columns(3)
+                                
+                                if 'left_cheek_fd' in data_entry:
+                                    with col1:
+                                        st.metric("左頬 FD", f"{data_entry['left_cheek_fd']:.4f}")
+                                
+                                if 'right_cheek_fd' in data_entry:
+                                    with col2:
+                                        st.metric("右頬 FD", f"{data_entry['right_cheek_fd']:.4f}")
+                                
+                                if 'average_fd' in data_entry:
+                                    with col3:
+                                        st.metric("平均 FD", f"{data_entry['average_fd']:.4f}")
                         else:
-                            st.error("❌ データの保存に失敗しました")
+                            st.error("❌ データの保存に失敗しました。画像を確認してください。")
         
         with history_tab:
             st.subheader("📚 収集済みデータ")
