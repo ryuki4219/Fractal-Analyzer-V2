@@ -4334,17 +4334,16 @@ def app():
                             st.markdown("---")
                             st.subheader("🌸 肌品質評価 (フラクタル次元分析)")
                             
-                            st.info("""
-                            💡 **フラクタル次元と肌の関係**
-                            
-                            - **低いFD値 (2.0-2.4)**: きめ細かく、スムーズな肌
-                            - **中程度のFD値 (2.4-2.6)**: 普通の肌質
-                            - **高いFD値 (2.6-3.0)**: 粗い肌、毛穴やシワが目立つ
-                            
-                            このAIは低画質画像から高画質相当のFD値を予測し、正確な肌評価を可能にします。
-                            """)
-                            
-                            # 評価モード選択
+                        st.info("""
+                        💡 **フラクタル次元と肌の関係**
+                        
+                        - **低いFD値 (2.0-2.3)**: 滑らかで均一な肌（健康的な肌状態）
+                        - **中程度のFD値 (2.3-2.6)**: 通常の肌質（適度な複雑性）
+                        - **高いFD値 (2.6-3.0)**: 不規則性が高い肌（乾燥・荒れ・毛穴が目立つ）
+                        
+                        ※FD値が高い = 表面の複雑性（不規則性）が高い = 肌トラブルが多い傾向
+                        このAIは低画質画像から高画質相当のFD値を予測し、正確な肌評価を可能にします。
+                        """)                            # 評価モード選択
                             eval_mode = st.radio(
                                 "評価モード",
                                 ["総合評価", "個別評価", "年齢層比較"],
@@ -6148,18 +6147,17 @@ def app():
         with trouble_tab:
             st.subheader("🔬 フラクタル次元と肌トラブルの関係分析")
             
-            st.markdown("""
-            ### 📖 分析の目的
-            フラクタル次元（FD）と画像解析で自動検出した肌トラブルの関係を明らかにします。
-            
-            **仮説:**
-            - FD値が高い（3.0に近い）= 肌のきめが細かい = 肌トラブルが少ない
-            - FD値が低い（2.0に近い）= 肌のきめが粗い = 肌トラブルが多い
-            
-            → つまり、FDと肌トラブルスコアには**負の相関**が期待される
-            """)
-            
-            # 肌トラブル自動検出データがあるか確認
+        st.markdown("""
+        ### 📖 分析の目的
+        フラクタル次元（FD）と画像解析で自動検出した肌トラブルの関係を明らかにします。
+        
+        **理論的背景（中川論文）:**
+        - FD値が高い（3.0に近い）= 表面の複雑性（不規則性）が高い = 肌トラブルが多い
+        - FD値が低い（2.0に近い）= 表面が滑らかで均一 = 健康的な肌
+        
+        → つまり、FDと肌トラブルスコアには**正の相関**が理論的に予測される
+        → 肌トラブル（乾燥・荒れ・毛穴）により表面が不規則化し、FD値が上昇する
+        """)            # 肌トラブル自動検出データがあるか確認
             trouble_cols = [col for col in df.columns if col.startswith('trouble_')]
             
             if not trouble_cols:
@@ -6226,21 +6224,19 @@ def app():
                                     'trouble_total_score': '総合トラブルスコア'
                                 }.get(col, col)
                                 
-                                # 相関の解釈
-                                if r < -0.7:
-                                    interpretation = "🟢 強い負の相関（FD高→トラブル少）"
-                                elif r < -0.4:
-                                    interpretation = "🟡 中程度の負の相関"
-                                elif r < -0.2:
-                                    interpretation = "🟠 弱い負の相関"
-                                elif r < 0.2:
-                                    interpretation = "⚪ 相関なし"
-                                elif r < 0.4:
-                                    interpretation = "🔴 弱い正の相関（予想外）"
-                                else:
-                                    interpretation = "🔴 正の相関（予想外）"
-                                
-                                significance = "**" if p_value < 0.01 else "*" if p_value < 0.05 else ""
+                            # 相関の解釈
+                            if r > 0.7:
+                                interpretation = "🟢 強い正の相関（理論と一致：FD高→トラブル多）"
+                            elif r > 0.4:
+                                interpretation = "🟡 中程度の正の相関（理論と一致）"
+                            elif r > 0.2:
+                                interpretation = "🟠 弱い正の相関（理論と一致）"
+                            elif r > -0.2:
+                                interpretation = "⚪ 相関なし"
+                            elif r > -0.4:
+                                interpretation = "🔵 弱い負の相関"
+                            else:
+                                interpretation = "🔵 負の相関（理論と異なる）"                                significance = "**" if p_value < 0.01 else "*" if p_value < 0.05 else ""
                                 
                                 trouble_correlations.append({
                                     '肌トラブル': trouble_name,
@@ -6257,27 +6253,26 @@ def app():
                         
                         st.caption("* p < 0.05（有意）, ** p < 0.01（高度に有意）")
                         
-                        # 研究への示唆
-                        st.markdown("### 💡 研究への示唆")
+                    # 研究への示唆
+                    st.markdown("### 💡 研究への示唆")
+                    
+                    significant_positive = [row for row in trouble_correlations 
+                                           if float(row['相関係数 (r)'].rstrip('*')) > 0.2 and '✅' in row['有意性']]
+                    
+                    if significant_positive:
+                        st.success(f"""
+                        ✅ **理論を支持する結果が見つかりました！**
                         
-                        significant_negative = [row for row in trouble_correlations 
-                                               if float(row['相関係数 (r)'].rstrip('*')) < -0.2 and '✅' in row['有意性']]
+                        以下の肌トラブルとFDに有意な正の相関があります:
+                        {', '.join([row['肌トラブル'] for row in significant_positive])}
                         
-                        if significant_negative:
-                            st.success(f"""
-                            ✅ **仮説を支持する結果が見つかりました！**
-                            
-                            以下の肌トラブルとFDに有意な負の相関があります:
-                            {', '.join([row['肌トラブル'] for row in significant_negative])}
-                            
-                            → フラクタル次元が高いほど、これらの肌トラブルが少ない傾向があります。
-                            → これは「FD値が高い=肌のきめが細かい=肌状態が良い」という仮説を支持します。
-                            """)
-                        else:
-                            st.info("""
-                            💡 現在のデータでは明確な相関は見られませんでした。
-                            
-                            考えられる理由:
+                        → フラクタル次元が高いほど、これらの肌トラブルが多い傾向があります。
+                        → これは中川論文の理論「肌トラブル→表面の不規則化→FD上昇」と**一致**します。
+                        → 肌の乾燥・荒れ・毛穴により表面パターンが複雑化し、フラクタル次元が上昇しています。
+                        """)
+                    else:
+                        st.info("""
+                        💡 現在のデータでは明確な相関は見られませんでした。                            考えられる理由:
                             - データ数が不足している
                             - 被験者の肌状態のバリエーションが少ない
                             - 測定条件のばらつき
