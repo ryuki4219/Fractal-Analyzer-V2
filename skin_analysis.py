@@ -27,12 +27,18 @@ def _init_face_detectors():
     
     # OpenCV Haar Cascade（必ず動く）
     if _face_cascade is None:
-        cascade_path = cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
-        if os.path.exists(cascade_path):
-            _face_cascade = cv2.CascadeClassifier(cascade_path)
-        else:
-            # 代替パス
-            _face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_alt2.xml')
+        candidates = [
+            cv2.data.haarcascades + 'haarcascade_frontalface_default.xml',
+            cv2.data.haarcascades + 'haarcascade_frontalface_alt2.xml',
+        ]
+        for cascade_path in candidates:
+            if os.path.exists(cascade_path):
+                clf = cv2.CascadeClassifier(cascade_path)
+                if not clf.empty():
+                    _face_cascade = clf
+                    break
+        if _face_cascade is None:
+            print("Warning: Haar cascade not found. OpenCV face detection may fail.")
     
     # MediaPipe（Python 3.12以下のみ）
     if _face_mesh is None:
@@ -99,18 +105,27 @@ def detect_face_opencv(image):
     
     for method_name, processed_gray in preprocessing_methods:
         if _face_cascade is not None and not _face_cascade.empty():
-            faces = _face_cascade.detectMultiScale(
-                processed_gray,
-                scaleFactor=1.05,
-                minNeighbors=3,
-                minSize=(80, 80),
-                flags=cv2.CASCADE_SCALE_IMAGE
-            )
-            if len(faces) > 0:
-                # 最大の顔を選択
-                x, y, w, h = max(faces, key=lambda f: f[2] * f[3])
-                print(f"OpenCV Haar Cascade ({method_name})で顔検出成功")
-                return (x, y, w, h)
+            # 画像サイズに応じて最小サイズを可変設定
+            h_img, w_img = processed_gray.shape[:2]
+            min_side = max(30, int(min(h_img, w_img) * 0.08))
+            min_size = (min_side, min_side)
+
+            # 複数パラメータでリトライ
+            param_sets = [
+                dict(scaleFactor=1.1, minNeighbors=5, minSize=min_size),
+                dict(scaleFactor=1.05, minNeighbors=4, minSize=min_size),
+                dict(scaleFactor=1.2, minNeighbors=3, minSize=(30, 30)),
+            ]
+            for params in param_sets:
+                faces = _face_cascade.detectMultiScale(
+                    processed_gray,
+                    **params,
+                    flags=cv2.CASCADE_SCALE_IMAGE
+                )
+                if len(faces) > 0:
+                    x, y, w, h = max(faces, key=lambda f: f[2] * f[3])
+                    print(f"OpenCV Haar Cascade ({method_name}, params={params})で顔検出成功")
+                    return (x, y, w, h)
     
     # dlibを試行
     if _dlib_detector is not None:
@@ -125,6 +140,22 @@ def detect_face_opencv(image):
         except:
             pass
     
+    # 画像中央のヒューリスティック・フォールバック
+    # 顔が大きく、前処理では検出できないケース向け
+    try:
+        h_img, w_img = image.shape[:2]
+        cx, cy = w_img // 2, h_img // 2
+        fw = int(w_img * 0.6)
+        fh = int(h_img * 0.7)
+        x = max(0, cx - fw // 2)
+        y = max(0, cy - int(fh * 0.45))  # 眉〜顎あたりを中心にやや上寄せ
+        w = min(fw, w_img - x)
+        h = min(fh, h_img - y)
+        print("フォールバック: 中央推定矩形で顔領域を仮定")
+        return (x, y, w, h)
+    except Exception:
+        pass
+
     return None
 
 

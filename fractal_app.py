@@ -3598,10 +3598,14 @@ def app():
                                 
                                 with img_col:
                                     st.markdown("### 📷 分析対象の顔写真")
-                                    # 顔全体の写真を表示（RGB変換）
-                                    st.image(cv2.cvtColor(image, cv2.COLOR_BGR2RGB), 
-                                            caption="アップロードされた顔写真", 
-                                            use_container_width=True)
+                                    # カラー/グレースケールの切替表示
+                                    color_tab, gray_tab = st.tabs(["カラー", "グレースケール"])
+                                    with color_tab:
+                                        st.image(cv2.cvtColor(image, cv2.COLOR_BGR2RGB),
+                                                 caption="カラー", use_container_width=True)
+                                    with gray_tab:
+                                        gray_img = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+                                        st.image(gray_img, caption="グレースケール（処理用）", use_container_width=True)
                                 
                                 with eval_col:
                                     st.markdown("### 🏆 評価結果")
@@ -3623,6 +3627,49 @@ def app():
                                 
                                 💡 **FD値が高い（3.0に近い）ほど、肌のきめが細かく複雑で綺麗な状態を示します。**
                                 """)
+
+                                # 解析した画像単体の最小二乗法グラフ（部位別FD vs 部位別トラブル）
+                                st.markdown("### 📈 この画像の部位別 回帰直線（最小二乗法）")
+                                try:
+                                    # 部位別FDとトラブルスコアを収集
+                                    per_region = []
+                                    for region_name, fd in fd_results.items():
+                                        # 該当部位のトラブル辞書がある場合、平均スコアを計算
+                                        troubles = trouble_results.get(region_name, {})
+                                        scores = []
+                                        for t in troubles.values():
+                                            if isinstance(t, dict) and 'score' in t:
+                                                scores.append(float(t['score']))
+                                        # スコアが無ければ None
+                                        avg_trouble = float(np.mean(scores)) if len(scores) > 0 else None
+                                        per_region.append({
+                                            'region': region_name,
+                                            'fd': float(fd),
+                                            'trouble': avg_trouble
+                                        })
+
+                                    df_one = pd.DataFrame(per_region)
+                                    df_one = df_one.dropna()
+                                    if len(df_one) >= 2:
+                                        fig, ax = plt.subplots(figsize=(8, 5))
+                                        ax.scatter(df_one['fd'], df_one['trouble'], s=100, alpha=0.7,
+                                                   color='steelblue', edgecolors='darkblue', linewidth=1.2)
+                                        # 回帰直線
+                                        z = np.polyfit(df_one['fd'], df_one['trouble'], 1)
+                                        p = np.poly1d(z)
+                                        x_line = np.linspace(df_one['fd'].min(), df_one['fd'].max(), 100)
+                                        ax.plot(x_line, p(x_line), 'r--', linewidth=2,
+                                                label=f"回帰直線: y={z[0]:.3f}x+{z[1]:.3f}")
+                                        ax.set_xlabel('部位別フラクタル次元 (FD)')
+                                        ax.set_ylabel('部位別トラブル平均スコア')
+                                        ax.set_title('本画像における FD とトラブルの関係（部位別）')
+                                        ax.grid(True, alpha=0.3, linestyle='--')
+                                        ax.legend(loc='lower right')
+                                        st.pyplot(fig, clear_figure=True)
+                                    else:
+                                        st.info('部位別の回帰直線には最低2部位の有効データが必要です。')
+                                except Exception as e:
+                                    st.warning(f"単体グラフの生成で問題が発生しました: {e}")
                             else:
                                 st.warning("FD値を計算できませんでした")
                         
@@ -4334,16 +4381,17 @@ def app():
                             st.markdown("---")
                             st.subheader("🌸 肌品質評価 (フラクタル次元分析)")
                             
-                        st.info("""
-                        💡 **フラクタル次元と肌の関係**
-                        
-                        - **低いFD値 (2.0-2.3)**: 滑らかで均一な肌（健康的な肌状態）
-                        - **中程度のFD値 (2.3-2.6)**: 通常の肌質（適度な複雑性）
-                        - **高いFD値 (2.6-3.0)**: 不規則性が高い肌（乾燥・荒れ・毛穴が目立つ）
-                        
-                        ※FD値が高い = 表面の複雑性（不規則性）が高い = 肌トラブルが多い傾向
-                        このAIは低画質画像から高画質相当のFD値を予測し、正確な肌評価を可能にします。
-                        """)                            # 評価モード選択
+                            st.info("""
+                            💡 **フラクタル次元と肌の関係**
+                            
+                            - **低いFD値 (2.0-2.3)**: 滑らかで均一な肌（健康的な肌状態）
+                            - **中程度のFD値 (2.3-2.6)**: 通常の肌質（適度な複雑性）
+                            - **高いFD値 (2.6-3.0)**: 不規則性が高い肌（乾燥・荒れ・毛穴が目立つ）
+                            
+                            ※FD値が高い = 表面の複雑性（不規則性）が高い = 肌トラブルが多い傾向
+                            このAIは低画質画像から高画質相当のFD値を予測し、正確な肌評価を可能にします。
+                            """)
+                            # 評価モード選択
                             eval_mode = st.radio(
                                 "評価モード",
                                 ["総合評価", "個別評価", "年齢層比較"],
@@ -5457,6 +5505,65 @@ def app():
                                     if 'trouble_total_score' in data_entry:
                                         st.metric("トラブルスコア", f"{data_entry['trouble_total_score']:.1f}")
                                 
+                                # 最小二乗法の回帰グラフ（FDとスコアの関係）
+                                st.markdown("### 📈 最小二乗法（回帰直線）")
+                                df_all = data_manager.load_data()
+                                if df_all is not None and 'average_fd' in df_all.columns:
+                                    y_col = None
+                                    y_label = None
+                                    title = None
+                                    if 'trouble_total_score' in df_all.columns:
+                                        y_col = 'trouble_total_score'
+                                        y_label = '肌トラブル総合スコア'
+                                        title = 'フラクタル次元 vs 肌トラブル総合スコア（全データ）'
+                                    else:
+                                        # データセットに総合スコアがない場合、FDから派生して可視化
+                                        df_all = df_all.copy()
+                                        df_all['overall_score'] = np.clip((df_all['average_fd'] - 2.0) * 100.0, 0, 100)
+                                        y_col = 'overall_score'
+                                        y_label = '総合スコア（FD由来）'
+                                        title = 'フラクタル次元 vs 総合スコア（全データ）'
+
+                                    valid_df = df_all[['average_fd', y_col]].dropna()
+                                    if len(valid_df) >= 2:
+                                        try:
+                                            fig = create_scatter_plot(valid_df, 'average_fd', y_col, 'フラクタル次元（平均FD）', y_label, title)
+                                        except Exception:
+                                            # フォールバック: 直接描画
+                                            fig, ax = plt.subplots(figsize=(10, 6))
+                                            x = valid_df['average_fd'].values
+                                            y = valid_df[y_col].values
+                                            ax.scatter(x, y, s=100, alpha=0.6, color='steelblue', edgecolors='darkblue', linewidth=1.5)
+                                            if len(valid_df) >= 2:
+                                                z = np.polyfit(x, y, 1)
+                                                p = np.poly1d(z)
+                                                x_line = np.linspace(x.min(), x.max(), 100)
+                                                ax.plot(x_line, p(x_line), 'r--', linewidth=2)
+                                            ax.set_xlabel('フラクタル次元（平均FD）')
+                                            ax.set_ylabel(y_label)
+                                            ax.set_title(title)
+
+                                        # 直近データ点を強調
+                                        try:
+                                            x0 = data_entry.get('average_fd', None)
+                                            if x0 is not None:
+                                                if y_col == 'trouble_total_score':
+                                                    y0 = data_entry.get('trouble_total_score', None)
+                                                else:
+                                                    y0 = float(np.clip((x0 - 2.0) * 100.0, 0, 100))
+                                                if y0 is not None:
+                                                    ax = fig.axes[0] if len(fig.axes) else plt.gca()
+                                                    ax.scatter([x0], [y0], s=180, marker='*', color='crimson', edgecolors='black', linewidths=1.0, label='今回の測定')
+                                                    ax.legend(loc='lower right')
+                                        except Exception:
+                                            pass
+
+                                        st.pyplot(fig, clear_figure=True)
+                                    else:
+                                        st.info("回帰直線の表示には最低2件のデータが必要です。複数回の測定を保存してください。")
+                                else:
+                                    st.info("実験データがまだありません。まずは何件かデータを保存してください。")
+
                                 # 部位別FD
                                 st.markdown("**部位別フラクタル次元:**")
                                 fd_cols = st.columns(4)
@@ -6147,17 +6254,18 @@ def app():
         with trouble_tab:
             st.subheader("🔬 フラクタル次元と肌トラブルの関係分析")
             
-        st.markdown("""
-        ### 📖 分析の目的
-        フラクタル次元（FD）と画像解析で自動検出した肌トラブルの関係を明らかにします。
-        
-        **理論的背景（中川論文）:**
-        - FD値が高い（3.0に近い）= 表面の複雑性（不規則性）が高い = 肌トラブルが多い
-        - FD値が低い（2.0に近い）= 表面が滑らかで均一 = 健康的な肌
-        
-        → つまり、FDと肌トラブルスコアには**正の相関**が理論的に予測される
-        → 肌トラブル（乾燥・荒れ・毛穴）により表面が不規則化し、FD値が上昇する
-        """)            # 肌トラブル自動検出データがあるか確認
+            st.markdown("""
+            ### 📖 分析の目的
+            フラクタル次元（FD）と画像解析で自動検出した肌トラブルの関係を明らかにします。
+            
+            **理論的背景（中川論文）:**
+            - FD値が高い（3.0に近い）= 表面の複雑性（不規則性）が高い = 肌トラブルが多い
+            - FD値が低い（2.0に近い）= 表面が滑らかで均一 = 健康的な肌
+            
+            → つまり、FDと肌トラブルスコアには**正の相関**が理論的に予測される
+            → 肌トラブル（乾燥・荒れ・毛穴）により表面が不規則化し、FD値が上昇する
+            """)
+            # 肌トラブル自動検出データがあるか確認
             trouble_cols = [col for col in df.columns if col.startswith('trouble_')]
             
             if not trouble_cols:
@@ -6224,19 +6332,21 @@ def app():
                                     'trouble_total_score': '総合トラブルスコア'
                                 }.get(col, col)
                                 
-                            # 相関の解釈
-                            if r > 0.7:
-                                interpretation = "🟢 強い正の相関（理論と一致：FD高→トラブル多）"
-                            elif r > 0.4:
-                                interpretation = "🟡 中程度の正の相関（理論と一致）"
-                            elif r > 0.2:
-                                interpretation = "🟠 弱い正の相関（理論と一致）"
-                            elif r > -0.2:
-                                interpretation = "⚪ 相関なし"
-                            elif r > -0.4:
-                                interpretation = "🔵 弱い負の相関"
-                            else:
-                                interpretation = "🔵 負の相関（理論と異なる）"                                significance = "**" if p_value < 0.01 else "*" if p_value < 0.05 else ""
+                                # 相関の解釈
+                                if r > 0.7:
+                                    interpretation = "🟢 強い正の相関（理論と一致：FD高→トラブル多）"
+                                elif r > 0.4:
+                                    interpretation = "🟡 中程度の正の相関（理論と一致）"
+                                elif r > 0.2:
+                                    interpretation = "🟠 弱い正の相関（理論と一致）"
+                                elif r > -0.2:
+                                    interpretation = "⚪ 相関なし"
+                                elif r > -0.4:
+                                    interpretation = "🔵 弱い負の相関"
+                                else:
+                                    interpretation = "🔵 負の相関（理論と異なる）"
+                                
+                                significance = "**" if p_value < 0.01 else "*" if p_value < 0.05 else ""
                                 
                                 trouble_correlations.append({
                                     '肌トラブル': trouble_name,
@@ -6253,26 +6363,27 @@ def app():
                         
                         st.caption("* p < 0.05（有意）, ** p < 0.01（高度に有意）")
                         
-                    # 研究への示唆
-                    st.markdown("### 💡 研究への示唆")
-                    
-                    significant_positive = [row for row in trouble_correlations 
-                                           if float(row['相関係数 (r)'].rstrip('*')) > 0.2 and '✅' in row['有意性']]
-                    
-                    if significant_positive:
-                        st.success(f"""
-                        ✅ **理論を支持する結果が見つかりました！**
+                        # 研究への示唆
+                        st.markdown("### 💡 研究への示唆")
                         
-                        以下の肌トラブルとFDに有意な正の相関があります:
-                        {', '.join([row['肌トラブル'] for row in significant_positive])}
+                        significant_positive = [row for row in trouble_correlations 
+                                               if float(row['相関係数 (r)'].rstrip('*')) > 0.2 and '✅' in row['有意性']]
                         
-                        → フラクタル次元が高いほど、これらの肌トラブルが多い傾向があります。
-                        → これは中川論文の理論「肌トラブル→表面の不規則化→FD上昇」と**一致**します。
-                        → 肌の乾燥・荒れ・毛穴により表面パターンが複雑化し、フラクタル次元が上昇しています。
-                        """)
-                    else:
-                        st.info("""
-                        💡 現在のデータでは明確な相関は見られませんでした。                            考えられる理由:
+                        if significant_positive:
+                            st.success(f"""
+                            ✅ **理論を支持する結果が見つかりました！**
+                            
+                            以下の肌トラブルとFDに有意な正の相関があります:
+                            {', '.join([row['肌トラブル'] for row in significant_positive])}
+                            
+                            → フラクタル次元が高いほど、これらの肌トラブルが多い傾向があります。
+                            → これは中川論文の理論「肌トラブル→表面の不規則化→FD上昇」と**一致**します。
+                            → 肌の乾燥・荒れ・毛穴により表面パターンが複雑化し、フラクタル次元が上昇しています。
+                            """)
+                        else:
+                            st.info("""
+                            💡 現在のデータでは明確な相関は見られませんでした。
+                            考えられる理由:
                             - データ数が不足している
                             - 被験者の肌状態のバリエーションが少ない
                             - 測定条件のばらつき
