@@ -3568,30 +3568,30 @@ def app():
                             if valid_fds:
                                 avg_fd = np.mean(valid_fds)
                                 
-                                # スコア計算（FD 2.0→0点、FD 3.0→100点）
+                                # FD由来トラブルスコア（FD 2.0→0点、FD 3.0→100点）
                                 overall_score = max(0, min(100, (avg_fd - 2.0) / 1.0 * 100))
                                 
-                                # グレード判定
+                                # リスクレベル判定（高いほど不規則性・トラブル傾向）
                                 if overall_score >= 85:
-                                    grade = "S"
-                                    grade_desc = "非常に良好"
-                                    grade_color = "green"
+                                    grade = "非常に高リスク"
+                                    grade_desc = "強いトラブル傾向"
+                                    grade_color = "red"
                                 elif overall_score >= 70:
-                                    grade = "A"
-                                    grade_desc = "良好"
-                                    grade_color = "blue"
-                                elif overall_score >= 55:
-                                    grade = "B"
-                                    grade_desc = "普通"
+                                    grade = "高リスク"
+                                    grade_desc = "注意が必要"
                                     grade_color = "orange"
-                                elif overall_score >= 40:
-                                    grade = "C"
+                                elif overall_score >= 55:
+                                    grade = "中リスク"
                                     grade_desc = "やや注意"
                                     grade_color = "orange"
+                                elif overall_score >= 40:
+                                    grade = "低〜中リスク"
+                                    grade_desc = "経過観察"
+                                    grade_color = "blue"
                                 else:
-                                    grade = "D"
-                                    grade_desc = "要注意"
-                                    grade_color = "red"
+                                    grade = "低リスク"
+                                    grade_desc = "比較的良好"
+                                    grade_color = "green"
                                 
                                 # 顔全体の写真と評価を横並びで表示
                                 img_col, eval_col = st.columns([1, 1])
@@ -3611,21 +3611,18 @@ def app():
                                     st.markdown("### 🏆 評価結果")
                                     col1, col2, col3 = st.columns(3)
                                     with col1:
-                                        st.metric("総合グレード", grade, grade_desc)
+                                        st.metric("リスクレベル", grade, grade_desc)
                                     with col2:
-                                        st.metric("総合スコア", f"{overall_score:.1f}点")
+                                        st.metric("FD由来トラブルスコア", f"{overall_score:.1f}点")
                                     with col3:
                                         st.metric("平均FD値", f"{avg_fd:.4f}")
                                 
                                 st.markdown(f"""
-                                ### 評価基準
-                                - **S (85点以上)**: きめが非常に細かく、健康で美しい肌
-                                - **A (70-84点)**: きめが細かく、良好な状態
-                                - **B (55-69点)**: 平均的な肌状態
-                                - **C (40-54点)**: やや荒れが見られる
-                                - **D (40点未満)**: 肌荒れが目立つ状態
+                                ### 指標の意味と目安
+                                - **FD由来トラブルスコア**: FDが高いほど表面の不規則性が増え、肌トラブルが多い傾向（0〜100）。
+                                - 目安: 0–40=低リスク／40–55=低〜中／55–70=中／70–85=高／85–100=非常に高。
                                 
-                                💡 **FD値が高い（3.0に近い）ほど、肌のきめが細かく複雑で綺麗な状態を示します。**
+                                💡 **FD値が高い（3.0に近い）ほど、表面の複雑性（不規則性）が高く、肌トラブルが増えやすい傾向があります。**
                                 """)
 
                                 # 解析した画像単体の最小二乗法グラフ（部位別FD vs 部位別トラブル）
@@ -5498,12 +5495,12 @@ def app():
                                 col1, col2, col3 = st.columns(3)
                                 with col1:
                                     score = max(0, min(100, (data_entry['average_fd'] - 2.0) / 1.0 * 100))
-                                    st.metric("総合スコア", f"{score:.1f}点")
+                                    st.metric("FD由来トラブルスコア", f"{score:.1f}点")
                                 with col2:
                                     st.metric("平均FD値", f"{data_entry['average_fd']:.4f}")
                                 with col3:
                                     if 'trouble_total_score' in data_entry:
-                                        st.metric("トラブルスコア", f"{data_entry['trouble_total_score']:.1f}")
+                                 st.metric("トラブルスコア", f"{data_entry['trouble_total_score']:.1f}")
                                 
                                 # 最小二乗法の回帰グラフ（FDとスコアの関係）
                                 st.markdown("### 📈 最小二乗法（回帰直線）")
