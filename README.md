@@ -197,6 +197,29 @@ pip install -r requirements.txt
 ## 🎯 AI補正精度評価システム
 
 ### 自動評価ランク
+ 
+---
+
+## 📝 論文テンプレートの生成（Word）
+
+PDF骨子に基づく論文テンプレート（.docx）を自動生成できます。
+
+### 生成手順（推奨）
+
+```cmd
+.venv\Scripts\activate.bat
+pip install -r requirements.txt
+python scripts\make_template_docx.py
+```
+
+生成後のファイルは `docs/templates/Paper_Template.docx` に保存されます。章立て・表・図のプレースホルダを含み、次の構成です：
+- Abstract / Keywords
+- 1. Introduction / 2. Related Work
+- 3. Methods（Dataset, Preprocessing, Fractal Feature Extraction, Baselines, Modeling）
+- 4. Experiments / 5. Results / 6. Discussion / 7. Ethics / 8. Reproducibility
+- 9. Conclusion / Acknowledgments / References / Appendix
+
+編集は通常のWordで行えます。図表は本リポジトリのコードから再生成可能な方針で執筆してください。
 
 アプリが自動的にAI補正の精度を評価します:
 
