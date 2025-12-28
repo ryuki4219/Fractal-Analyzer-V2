@@ -1,0 +1,26 @@
+{
+  "title": "フラクタルを活用した顔画像解析（仮題）",
+  "authors": "山田 太郎（神奈川工科大学）、佐藤 花子（共同研究者）",
+  "contact": "corresponding@example.com / ORCID: 0000-0000-0000-0000",
+  "keywords": ["fractal dimension", "skin analysis", "texture", "dermatology"],
+  "abstract": "背景: 皮膚テクスチャの解析にフラクタル次元を適用する。目的: 画像の粗さ・複雑性指標としてのFDの有効性を検証。方法: 箱数え法によりFDを推定し、従来特徴・簡易CNNと比較。結果: FDは特定条件で有意に性能向上。結論: フラクタル特徴は軽量で解釈可能な皮膚解析の基盤となり得る。",
+  "sections": {
+    "1. Introduction": "皮膚画像解析の臨床的意義、既存手法の課題、フラクタル次元の着眼点と本研究の貢献を簡潔に述べる。",
+    "2. Related Work": "GLCM/LBP/Haralick等の古典的テクスチャ解析、転移学習CNNの代表的研究、医用画像へのフラクタル応用の流れを整理。",
+    "3.1 Dataset": "データ枚数、撮影条件、ラベル分布、匿名化・同意取得の整理。",
+    "3.2 Preprocessing": "肌領域抽出（MediaPipe/OpenCV/dlib）、照明補正、解像度統一の手順。",
+    "3.3 Fractal Feature Extraction": "離散スケール系列、二値化・形態処理、線形領域選定、R²の評価を記述。",
+    "3.4 Baselines": "GLCM/LBP/Haralickおよび簡易CNN（転移学習）を比較対象とする方針。",
+    "3.5 Modeling": "分類（SVM/RandomForest）、回帰（Lasso/Ridge）などを検討。",
+    "4. Experiments": "stratified k-fold、検証セット分離、ハイパラ選定、効果量・信頼区間、多重比較補正。",
+    "5. Results": "F1/ROC-AUC、MAE/RMSE、回帰線と残差プロット、ROC、箱ひげ図を提示。",
+    "6. Discussion": "効く条件と限界、照明・解像度の影響、臨床解釈。",
+    "7. Ethics": "匿名化、同意、バイアスの扱い。",
+    "8. Reproducibility": "コード、設定、乱数種、関連ファイルの明記。",
+    "9. Conclusion": "総括と今後の展望。",
+    "Acknowledgments": "資金提供・共同研究者への謝辞。",
+    "References": "採用スタイルに合わせた参考文献記載。",
+    "Appendix": "追加図、ハイパラ、失敗例、感度分析。"
+  },
+  "remove_todo_hints": true
+}

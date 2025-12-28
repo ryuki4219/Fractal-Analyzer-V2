@@ -221,6 +221,17 @@ python scripts\make_template_docx.py
 
 編集は通常のWordで行えます。図表は本リポジトリのコードから再生成可能な方針で執筆してください。
 
+### 自動埋め（テンプレに内容を流し込み）
+
+設定ファイルからテンプレを自動で埋めて出力できます。
+
+```cmd
+.venv\Scripts\activate.bat
+python scripts\fill_template_docx.py
+```
+
+設定ファイルは [docs/templates/paper_config.json](docs/templates/paper_config.json) です。出力は [docs/output](docs/output) に `Paper_Filled_YYYYMMDD_HHMM.docx` で保存されます。
+
 アプリが自動的にAI補正の精度を評価します:
 
 | ランク | 改善率 | 評価 | 説明 |
