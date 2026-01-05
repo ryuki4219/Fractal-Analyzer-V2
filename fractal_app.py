@@ -5500,7 +5500,7 @@ def app():
                                     st.metric("平均FD値", f"{data_entry['average_fd']:.4f}")
                                 with col3:
                                     if 'trouble_total_score' in data_entry:
-                                 st.metric("トラブルスコア", f"{data_entry['trouble_total_score']:.1f}")
+                                        st.metric("トラブルスコア", f"{data_entry['trouble_total_score']:.1f}")
                                 
                                 # 最小二乗法の回帰グラフ（FDとスコアの関係）
                                 st.markdown("### 📈 最小二乗法（回帰直線）")
