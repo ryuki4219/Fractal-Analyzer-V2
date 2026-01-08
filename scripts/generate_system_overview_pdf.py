@@ -13,7 +13,7 @@ import math
 from reportlab.lib import fonts
 from reportlab.lib.colors import black, white, HexColor
 import os
-from reportlab.graphics.shapes import Drawing, Rect, String, Line, Circle
+from reportlab.graphics.shapes import Drawing, Rect, String, Line, Circle, Ellipse, Polygon
 from reportlab.graphics import renderPM, renderPDF
 import numpy as np
 import matplotlib
@@ -213,6 +213,10 @@ def build_pdf(output_path: str):
         data_bullets = []
         n_text = "複数"
         reg_png = None
+        reg_info = None
+        # stats placeholders
+        n = 0
+        fd_mean = fd_stdv = fd_min = fd_max = None
         if os.path.exists(csv_path):
             import pandas as pd
             df = pd.read_csv(csv_path, encoding="utf-8", engine="python")
@@ -223,7 +227,8 @@ def build_pdf(output_path: str):
             if 'average_fd' in df.columns:
                 s = df['average_fd'].dropna()
                 if len(s) > 0:
-                    data_bullets.append(f"FD(平均±SD): {s.mean():.3f} ± {s.std():.3f}（最小 {s.min():.3f}, 最大 {s.max():.3f}）")
+                    fd_mean, fd_stdv, fd_min, fd_max = float(s.mean()), float(s.std()), float(s.min()), float(s.max())
+                    data_bullets.append(f"フラクタル次元（平均±SD）: {fd_mean:.3f} ± {fd_stdv:.3f}（最小 {fd_min:.3f}, 最大 {fd_max:.3f}）")
             if 'trouble_total_score' in df.columns:
                 t = df['trouble_total_score'].dropna()
                 if len(t) > 0:
@@ -233,22 +238,57 @@ def build_pdf(output_path: str):
                 dd = df[['average_fd','trouble_total_score']].dropna()
                 if len(dd) >= 3:
                     r = float(dd['average_fd'].corr(dd['trouble_total_score']))
-                    a, b = np.polyfit(dd['average_fd'].to_numpy(), dd['trouble_total_score'].to_numpy(), 1)
-                    data_bullets.append(f"相関（FD vs トラブル総合）: r={r:.3f}, 回帰: y={a:.3f}x+{b:.3f}")
+                    # 回帰（フラクタル次元を目的変数、トラブル総合を説明変数）
+                    x_arr = dd['trouble_total_score'].to_numpy()
+                    y_arr = dd['average_fd'].to_numpy()
+                    a, b = np.polyfit(x_arr, y_arr, 1)
+                    data_bullets.append(f"相関（フラクタル次元 vs トラブル総合）: r={r:.3f}, 回帰（縦=フラクタル次元, 横=肌トラブル総合）: y={a:.3f}x+{b:.3f}")
+                    # 残差とRMSE、近傍（インライヤ）比率
+                    y_pred = a * x_arr + b
+                    resid = y_arr - y_pred
+                    rmse = float(np.sqrt(np.mean(resid**2)))
+                    inlier_mask = np.abs(resid) <= rmse
+                    inlier_cnt = int(inlier_mask.sum())
+                    total_cnt = int(len(y_arr))
+                    inlier_ratio = float(inlier_cnt / total_cnt) if total_cnt > 0 else 0.0
+                    # 有効データ（インライヤ）の相関・回帰（件数>=3のとき）
+                    a_in = b_in = r_in = None
+                    if inlier_cnt >= 3:
+                        x_in = x_arr[inlier_mask]
+                        y_in = y_arr[inlier_mask]
+                        r_in = float(np.corrcoef(x_in, y_in)[0,1])
+                        a_in, b_in = np.polyfit(x_in, y_in, 1)
+                    reg_info = {
+                        "a": float(a),
+                        "b": float(b),
+                        "r": float(r),
+                        "rmse": rmse,
+                        "inlier_cnt": inlier_cnt,
+                        "total_cnt": total_cnt,
+                        "inlier_ratio": inlier_ratio,
+                        "a_in": float(a_in) if a_in is not None else None,
+                        "b_in": float(b_in) if b_in is not None else None,
+                        "r_in": float(r_in) if r_in is not None else None,
+                        "xmin": float(x_arr.min()),
+                        "xmax": float(x_arr.max()),
+                        "ymin": float(y_arr.min()),
+                        "ymax": float(y_arr.max()),
+                    }
 
                     # Regression plot
                     try:
                         # Japanese font for matplotlib
                         plt.rcParams['font.family'] = font_name
                         fig, ax = plt.subplots(figsize=(5.8, 4.0), dpi=150)
-                        x = dd['average_fd'].to_numpy()
-                        y = dd['trouble_total_score'].to_numpy()
+                        # 軸を入れ替え：x=肌トラブル総合、y=フラクタル次元
+                        x = x_arr
+                        y = y_arr
                         ax.scatter(x, y, s=16, alpha=0.75, color="#1976D2", label="データ")
                         xs = np.linspace(x.min(), x.max(), 100)
                         ys = a * xs + b
                         ax.plot(xs, ys, color="#D32F2F", linewidth=2.0, label=f"回帰線: y={a:.3f}x+{b:.3f}")
-                        ax.set_xlabel("FD（average_fd）")
-                        ax.set_ylabel("肌トラブル総合スコア")
+                        ax.set_xlabel("肌トラブル総合スコア")
+                        ax.set_ylabel("フラクタル次元")
                         ax.grid(True, linestyle=":", linewidth=0.6, alpha=0.6)
                         ax.legend(loc="best", fontsize=9)
                         # annotation with r
@@ -261,13 +301,21 @@ def build_pdf(output_path: str):
                     except Exception:
                         reg_png = None
 
-        # Results summary bullets
-        results_bullets.extend([
-            f"本研究では、約{n_text}件の顔画像を対象としてフラクタル次元（FD）を算出し、肌トラブル評価との関係を分析した。",
-            "その結果、FD値が高い画像ほど、肌トラブル評価が高くなる傾向が確認された。",
-            "最小二乗法による回帰分析においても、FD値と肌トラブル指標の間には正の相関が示された。",
-            "これらの結果から、肌表面の図形的な複雑さが増加するほど、肌トラブルが顕在化する可能性が示唆された。",
-        ])
+        # Results summary bullets（数値を自動挿入し、軸の向きを明示）
+        if n > 0:
+            results_bullets.append(f"対象: {n_text}件の顔画像を解析。")
+        if fd_mean is not None:
+            results_bullets.append(f"フラクタル次元の統計: 平均 {fd_mean:.3f}、標準偏差 {fd_stdv:.3f}、最小 {fd_min:.3f}、最大 {fd_max:.3f}。")
+        if reg_info is not None:
+            sgn = "正" if reg_info["r"] >= 0 else "負"
+            results_bullets.append(f"相関係数 r={reg_info['r']:.3f}（{sgn}の関係）。")
+            results_bullets.append(f"回帰（縦=フラクタル次元, 横=肌トラブル総合）: y={reg_info['a']:.3f}x+{reg_info['b']:.3f}。")
+        else:
+            results_bullets.extend([
+                f"本研究では、約{n_text}件の顔画像を対象としてフラクタル次元を算出し、肌トラブル評価との関係を分析した。",
+                "その結果、フラクタル次元が高い画像ほど、肌トラブル評価が高くなる傾向が確認された。",
+                "最小二乗法による回帰分析においても、フラクタル次元と肌トラブル指標の間には正の相関が示された。",
+            ])
 
         story.append(Paragraph("結果（要約）", section_style))
         story.append(Spacer(1, 2*mm))
@@ -282,9 +330,44 @@ def build_pdf(output_path: str):
 
         # Embed regression plot if created
         if reg_png and os.path.exists(reg_png):
-            story.append(Paragraph("回帰図（FD vs 肌トラブル総合）", section_style))
+            story.append(Paragraph("回帰図（横: 肌トラブル総合, 縦: フラクタル次元）", section_style))
             story.append(Spacer(1, 2*mm))
             story.append(Image(reg_png, width=170*mm, height=110*mm))
+            story.append(Spacer(1, 5*mm))
+
+        # Insights from the graph
+        if reg_info is not None:
+            def r_strength_label(rv: float) -> str:
+                av = abs(rv)
+                if av < 0.3:
+                    return "弱い"
+                if av < 0.5:
+                    return "中程度"
+                return "比較的強い"
+            insights = []
+            sgn = "正" if reg_info["a"] >= 0 else "負"
+            insights.append(f"相関係数 r={reg_info['r']:.3f}（{r_strength_label(reg_info['r'])}、{sgn}の関係）。")
+            insights.append(f"回帰式は フラクタル次元 y = {reg_info['a']:.3f} × 肌トラブル総合 + {reg_info['b']:.3f}。")
+            insights.append(f"解釈：肌トラブル総合が10ポイント増加すると、フラクタル次元はおよそ {reg_info['a']*10:.3f} 増加。")
+            insights.append(f"観測範囲：肌トラブル総合 {reg_info['xmin']:.1f}–{reg_info['xmax']:.1f}、フラクタル次元 {reg_info['ymin']:.3f}–{reg_info['ymax']:.3f}。")
+            insights.append("注意：一次回帰は観測範囲での近似であり、因果関係を直接示すものではない。")
+            story.append(Paragraph("グラフから読み取れること", section_style))
+            story.append(Spacer(1, 2*mm))
+            story.append(ListFlowable([ListItem(Paragraph(b, style)) for b in insights], bulletType='bullet'))
+            story.append(Spacer(1, 5*mm))
+
+            # 有効性評価（回帰近傍データ）
+            eff_bullets = []
+            eff_bullets.append(f"残差のRMSE ≈ {reg_info['rmse']:.4f}。この範囲以内を近傍（インライヤ）と定義。")
+            eff_bullets.append(f"インライヤ件数/全件数: {reg_info['inlier_cnt']} / {reg_info['total_cnt']}（{reg_info['inlier_ratio']*100:.1f}%）。")
+            label_eff = "概ね有効" if reg_info['inlier_ratio'] >= 0.6 else ("一部有効" if reg_info['inlier_ratio'] >= 0.4 else "限定的")
+            eff_bullets.append(f"評価：近傍比率が高く、{label_eff}な傾向が示唆。撮影条件・前処理の標準化で更なる改善が期待される。")
+            if reg_info['a_in'] is not None and reg_info['r_in'] is not None:
+                eff_bullets.append(f"有効データのみの再回帰：y = {reg_info['a_in']:.3f}x + {reg_info['b_in']:.3f}、相関 r={reg_info['r_in']:.3f}。")
+                eff_bullets.append(f"解釈（有効データ）：10ポイント増加時のフラクタル次元変化 ≈ {reg_info['a_in']*10:.3f}。")
+            story.append(Paragraph("有効性評価（回帰近傍データ）", section_style))
+            story.append(Spacer(1, 2*mm))
+            story.append(ListFlowable([ListItem(Paragraph(b, style)) for b in eff_bullets], bulletType='bullet'))
             story.append(Spacer(1, 5*mm))
     except Exception as e:
         story.append(Paragraph(f"結果サマリーの生成に失敗: {e}", style))
@@ -311,6 +394,7 @@ def build_pdf(output_path: str):
         mod_png = os.path.join(out_dir, "module_diagram.png")
         sys_pdf = os.path.join(out_dir, "system_diagram.pdf")
         mod_pdf = os.path.join(out_dir, "module_diagram.pdf")
+        flow_pdf = os.path.join(out_dir, "flow_diagram.pdf")
 
         def create_system_diagram():
             d = Drawing(640, 380)
@@ -500,8 +584,140 @@ def build_pdf(output_path: str):
 
             return d
 
+        def create_flow_diagram():
+            # Vertical, orthogonal flow with decision and side branch
+            d = Drawing(640, 760)
+
+            # palette
+            col_arrow = HexColor('#455A64')
+            fill_proc = HexColor('#E8F5E9'); stroke_proc = HexColor('#4CAF50')
+            fill_data = HexColor('#E3F2FD'); stroke_data = HexColor('#2196F3')
+            fill_out  = HexColor('#F3E5F5'); stroke_out  = HexColor('#9C27B0')
+            fill_dec  = HexColor('#FFF8E1'); stroke_dec  = HexColor('#F9A825')
+
+            # helpers (centered boxes)
+            def add_box_c(cx, y, w, h, lines, fc, sc):
+                x = cx - w/2
+                d.add(Rect(x, y, w, h, fillColor=fc, strokeColor=sc))
+                fs = 11
+                total = fs * len(lines)
+                sy = y + h/2 + total/2 - fs
+                for i, t in enumerate(lines):
+                    d.add(String(cx, sy - i*fs, t, fontName=font_name, fontSize=fs, textAnchor='middle'))
+                return {"cx": cx, "y": y, "w": w, "h": h}
+
+            def add_ellipse_c(cx, y, rx, ry, text, sc):
+                cy = y + ry
+                d.add(Ellipse(cx, cy, rx, ry, fillColor=None, strokeColor=sc))
+                d.add(String(cx, cy-6, text, fontName=font_name, fontSize=12, textAnchor='middle'))
+                return {"cx": cx, "cy": cy, "rx": rx, "ry": ry}
+
+            def add_diamond_c(cx, y, w, h, lines):
+                cy = y + h/2
+                pts = [cx, cy+h/2, cx+w/2, cy, cx, cy-h/2, cx-w/2, cy]
+                d.add(Polygon(pts, fillColor=fill_dec, strokeColor=stroke_dec))
+                fs = 11
+                total = fs * len(lines)
+                sy = cy + total/2 - fs
+                for i, t in enumerate(lines):
+                    d.add(String(cx, sy - i*fs, t, fontName=font_name, fontSize=fs, textAnchor='middle'))
+                return {"cx": cx, "cy": cy, "w": w, "h": h}
+
+            def _arrow_head(x1, y1, x2, y2, color=col_arrow, head_len=10, head_deg=28):
+                dx, dy = x2 - x1, y2 - y1
+                L = math.hypot(dx, dy)
+                if L == 0:
+                    return
+                ux, uy = dx / L, dy / L
+                bx, by = -ux, -uy
+                rad = math.radians(head_deg)
+                r1x = bx*math.cos(rad) - by*math.sin(rad)
+                r1y = bx*math.sin(rad) + by*math.cos(rad)
+                r2x = bx*math.cos(-rad) - by*math.sin(-rad)
+                r2y = bx*math.sin(-rad) + by*math.cos(-rad)
+                p1x, p1y = x2 + r1x*head_len, y2 + r1y*head_len
+                p2x, p2y = x2 + r2x*head_len, y2 + r2y*head_len
+                d.add(Line(x2, y2, p1x, p1y, strokeColor=color))
+                d.add(Line(x2, y2, p2x, p2y, strokeColor=color))
+
+            def arrow_v(x, y1, y2):
+                d.add(Line(x, y1, x, y2, strokeColor=col_arrow))
+                _arrow_head(x, y1, x, y2)
+
+            def arrow_h(x1, x2, y):
+                d.add(Line(x1, y, x2, y, strokeColor=col_arrow))
+                _arrow_head(x1, y, x2, y)
+
+            # layout grid
+            cx = 320
+            w = 240; h = 56
+            gap = 24
+            y = 680
+
+            start = add_ellipse_c(cx, y, 42, 22, "開始", stroke_proc)
+            y -= (start["ry"]*2 + gap)
+
+            inp = add_box_c(cx, y, w, h, ["入力（顔画像）"], fill_data, stroke_data)
+            arrow_v(cx, inp["y"] + inp["h"], inp["y"] + inp["h"] + gap)
+            y -= (h + gap)
+
+            prep = add_box_c(cx, y, w, h, ["前処理（リサイズ・色空間）"], fill_proc, stroke_proc)
+            arrow_v(cx, prep["y"] + prep["h"], prep["y"] + prep["h"] + gap)
+            y -= (h + gap)
+
+            detect = add_box_c(cx, y, w, h, ["顔検出"], fill_proc, stroke_proc)
+            arrow_v(cx, detect["y"] + detect["h"], detect["y"] + detect["h"] + gap)
+            y -= (h + gap)
+
+            dec = add_diamond_c(cx, y, 140, 70, ["検出成功？"])
+            # labels for yes/no
+            d.add(String(cx + 70, dec["cy"] + 22, "はい", fontName=font_name, fontSize=10, textAnchor='start'))
+            d.add(String(cx + 70, dec["cy"] - 22, "いいえ", fontName=font_name, fontSize=10, textAnchor='start'))
+            # yes path: go down
+            arrow_v(cx, dec["cy"] - dec["h"]/2, dec["cy"] - dec["h"]/2 - gap)
+
+            # no path: go right to fail, then back to 前処理
+            fail = add_box_c(cx + 260, dec["cy"] - 30, 200, 60, ["失敗時処理", "（再検出/撮影やり直し）"], fill_out, stroke_out)
+            arrow_h(cx + dec["w"]/2, fail["cx"] - fail["w"]/2 - 10, dec["cy"])  # to fail box
+            # back to prep (orthogonal: right->up->left)
+            midx = fail["cx"]
+            arrow_v(midx, dec["cy"], prep["y"] + prep["h"] + gap)
+            arrow_h(midx, cx, prep["y"] + prep["h"] + gap)
+
+            y = dec["cy"] - dec["h"]/2 - gap - h  # next row baseline
+            seg = add_box_c(cx, y, w, h, ["領域分割"], fill_proc, stroke_proc)
+            arrow_v(cx, seg["y"] + seg["h"], seg["y"] + seg["h"] + gap)
+
+            y -= (h + gap)
+            fd = add_box_c(cx, y, w, h, ["FD算出（2D/DBC）"], fill_proc, stroke_proc)
+            arrow_v(cx, fd["y"] + fd["h"], fd["y"] + fd["h"] + gap)
+
+            y -= (h + gap)
+            ai = add_box_c(cx, y, w, h, ["AI補正（LightGBM）"], fill_proc, stroke_proc)
+            arrow_v(cx, ai["y"] + ai["h"], ai["y"] + ai["h"] + gap)
+
+            y -= (h + gap)
+            ev = add_box_c(cx, y, w, h, ["評価・可視化（相関・グラフ）"], fill_proc, stroke_proc)
+            arrow_v(cx, ev["y"] + ev["h"], ev["y"] + ev["h"] + gap)
+
+            y -= (h + gap)
+            save = add_box_c(cx, y, w, h, ["保存（CSV/モデル）"], fill_data, stroke_data)
+            arrow_v(cx, save["y"] + save["h"], save["y"] + save["h"] + gap)
+
+            y -= (h + gap)
+            rep = add_box_c(cx, y, w, h, ["レポート（PDF/Word）"], fill_out, stroke_out)
+            arrow_v(cx, rep["y"] + rep["h"], rep["y"] + rep["h"] + gap)
+
+            y -= (h + gap)
+            end = add_ellipse_c(cx, y, 42, 22, "終了", stroke_proc)
+
+            # legend
+            d.add(String(20, 20, "凡例: 青=データ、緑=処理、紫=出力/例外", fontName=font_name, fontSize=10))
+            return d
+
         sd = create_system_diagram()
         md = create_module_diagram()
+        fdg = create_flow_diagram()
         try:
             renderPM.drawToFile(sd, sys_png, fmt='PNG')
             renderPM.drawToFile(md, mod_png, fmt='PNG')
@@ -510,6 +726,7 @@ def build_pdf(output_path: str):
         try:
             renderPDF.drawToFile(sd, sys_pdf)
             renderPDF.drawToFile(md, mod_pdf)
+            renderPDF.drawToFile(fdg, flow_pdf)
         except Exception:
             pass
 
@@ -536,6 +753,12 @@ def build_pdf(output_path: str):
         story.append(Paragraph("モジュール図 (コピー用: PDFは docs/output/module_diagram.pdf)", section_style))
         story.append(Spacer(1, 2*mm))
         story.append(DrawingFlowable(md, width_pt=170*mm, height_pt=115*mm))
+        story.append(Spacer(1, 5*mm))
+
+        # Flow diagram
+        story.append(Paragraph("実際のフロー図 (コピー用: PDFは docs/output/flow_diagram.pdf)", section_style))
+        story.append(Spacer(1, 2*mm))
+        story.append(DrawingFlowable(fdg, width_pt=170*mm, height_pt=125*mm))
         story.append(Spacer(1, 5*mm))
     except Exception as e:
         # If diagram generation fails, continue without images

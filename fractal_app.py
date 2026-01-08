@@ -29,9 +29,9 @@ except ImportError:
     PLOTLY_AVAILABLE = False
     print("Warning: plotly not found. Install with: pip install plotly")
 
-# PILのインポート（EXIFデータ読み取り用）
+# PILのインポート（EXIF/日本語描画用）
 try:
-    from PIL import Image
+    from PIL import Image, ImageDraw, ImageFont
     from PIL.ExifTags import TAGS, GPSTAGS
     PIL_AVAILABLE = True
 except ImportError:
@@ -495,6 +495,62 @@ def read_bgr_from_path(filepath):
         return img
     except Exception as e:
         return None
+
+# ------------------------------------------------------------
+# Utility: draw Japanese text on BGR image using Pillow
+def draw_jp_label_on_bgr(img_bgr, text, x, y, font_size=18,
+                         text_rgb=(255, 255, 255), bg_rgb=(0, 0, 0)):
+    """Draw Japanese text at (x, y) (top-left) with solid background.
+    Returns modified BGR image.
+    """
+    try:
+        if not PIL_AVAILABLE:
+            # Fallback: OpenCV (may show '???' for non-ASCII)
+            cv2.putText(img_bgr, text, (x, max(0, y)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 2)
+            return img_bgr
+
+        # Prepare PIL image
+        img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+        pil_img = Image.fromarray(img_rgb)
+        draw = ImageDraw.Draw(pil_img)
+
+        # Try Windows Japanese fonts in order
+        font_paths = [
+            r"C:\\Windows\\Fonts\\meiryo.ttc",
+            r"C:\\Windows\\Fonts\\YuGothM.ttc",
+            r"C:\\Windows\\Fonts\\YuGothR.ttc",
+            r"C:\\Windows\\Fonts\\MSGOTHIC.TTC",
+        ]
+        font = None
+        for fp in font_paths:
+            try:
+                if os.path.exists(fp):
+                    font = ImageFont.truetype(fp, font_size)
+                    break
+            except Exception:
+                continue
+        if font is None:
+            font = ImageFont.load_default()
+
+        # Compute text box and clamp position
+        # textbbox returns (left, top, right, bottom)
+        bbox = draw.textbbox((0,0), text, font=font)
+        tw = bbox[2] - bbox[0]
+        th = bbox[3] - bbox[1]
+        tx = max(0, min(pil_img.width - tw - 2, x))
+        ty = max(0, min(pil_img.height - th - 2, y))
+
+        # Draw background rectangle
+        draw.rectangle((tx - 2, ty - 2, tx + tw + 2, ty + th + 2), fill=bg_rgb)
+        # Draw text
+        draw.text((tx, ty), text, fill=text_rgb, font=font)
+
+        # Back to BGR
+        out_bgr = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+        return out_bgr
+    except Exception:
+        # As last resort, keep original
+        return img_bgr
 
 # ============================================================
 # Fast vectorized standard-deviation box-counting (中川式ベース)
@@ -3692,11 +3748,17 @@ def app():
                                 x, y, w, h = region_data['bbox']
                                 color = colors.get(region_name, (255, 255, 255))
                                 cv2.rectangle(display_image, (x, y), (x+w, y+h), color, 2)
-                                
-                                # ラベル
+
+                                # ラベル（Pillowで日本語対応）
                                 label = REGION_NAMES_JP.get(region_name, region_name)
-                                cv2.putText(display_image, label, (x, y-5), 
-                                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+                                # テキスト配置は矩形の上（はみ出し時は矩形内上部）
+                                label_top = y - 22
+                                if label_top < 0:
+                                    label_top = y + 2
+                                display_image = draw_jp_label_on_bgr(
+                                    display_image, label, x, label_top,
+                                    font_size=18, text_rgb=(255,255,255), bg_rgb=(0,0,0)
+                                )
                             
                             st.image(cv2.cvtColor(display_image, cv2.COLOR_BGR2RGB), 
                                     caption="検出された部位", use_container_width=True)

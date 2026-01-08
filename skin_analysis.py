@@ -372,6 +372,11 @@ def extract_face_regions(image, landmarks):
     if all(i < len(points) for i in nose_indices):
         nose_points = points[nose_indices]
         x, y, w_region, h_region = cv2.boundingRect(nose_points)
+        # 鼻をわずかに右下へ（前回左寄せした分を少し戻す）
+        shift_x = max(1, int(0.015 * w))
+        shift_y = max(1, int(0.015 * h))
+        x = max(0, min(x + shift_x, w - w_region))
+        y = max(0, min(y + shift_y, h - h_region))
         regions['nose'] = {
             'image': image[y:y+h_region, x:x+w_region],
             'bbox': (x, y, w_region, h_region)
@@ -383,28 +388,48 @@ def extract_face_regions(image, landmarks):
     if all(i < len(points) for i in mouth_indices):
         mouth_points = points[mouth_indices]
         x, y, w_region, h_region = cv2.boundingRect(mouth_points)
-        # 上下に拡張
-        padding = h_region // 3
-        y_start = max(0, y - padding)
-        y_end = min(h, y + h_region + padding)
+        # 周辺（口周り）パディング：横10%、上10%、下14%（やや下寄せ）
+        pad_x = max(2, int(w_region * 0.10))
+        pad_top = max(1, int(h_region * 0.10))
+        pad_bot = max(2, int(h_region * 0.14))
+        x1 = max(0, x - pad_x)
+        x2 = min(w, x + w_region + pad_x)
+        y1 = max(0, y - pad_top)
+        y2 = min(h, y + h_region + pad_bot)
+        # 全体をわずかに下へ1%（画像高基準）
+        shift_down = max(1, int(0.01 * h))
+        y1 = min(h - 1, y1 + shift_down)
+        y2 = min(h, max(y1 + 1, y2 + max(1, int(0.005 * h))))
         regions['mouth_area'] = {
-            'image': image[y_start:y_end, x:x+w_region],
-            'bbox': (x, y_start, w_region, y_end - y_start)
+            'image': image[y1:y2, x1:x2],
+            'bbox': (x1, y1, x2 - x1, y2 - y1)
         }
+        mouth_y_end = y2
     
     # 顎
-    chin_indices = [152, 377, 400, 378, 379, 365, 397, 288, 361, 323, 454, 356,
-                    389, 251, 284, 332, 297, 338, 10, 109, 67, 103, 54, 21, 162,
-                    127, 234, 93, 132, 58, 172, 136, 150, 149]
-    if all(i < len(points) for i in chin_indices):
-        chin_points = points[chin_indices]
-        x, y, w_region, h_region = cv2.boundingRect(chin_points)
-        # 下半分のみ（顎部分）
-        y_mid = y + h_region // 2
-        regions['chin'] = {
-            'image': image[y_mid:y+h_region, x:x+w_region],
-            'bbox': (x, y_mid, w_region, h_region // 2)
-        }
+    # 顎（下顎ラインのみに限定して矩形化）
+    chin_jaw_indices = [152, 377, 400, 378, 379, 365, 397, 288, 361, 323, 454, 356]
+    if all(i < len(points) for i in chin_jaw_indices):
+        chin_points = points[chin_jaw_indices]
+        cx, cy, cw, ch = cv2.boundingRect(chin_points)
+        # 口領域の下端より少し下から開始（重複を避けつつ、やや下げる）
+        margin = max(2, int(0.02 * h))
+        y_top_from_chin = cy + int(ch * 0.15)
+        y_start = y_top_from_chin
+        try:
+            y_start = max(y_top_from_chin, mouth_y_end + margin)  # mouth_y_end があれば使用
+        except NameError:
+            pass
+        # 高さはやや増やす（最大12%）
+        y_end = min(h, y_start + max(2, int(0.12 * h)))
+        # 横は少し内側に（頬を含みすぎないように）
+        x1 = max(0, cx + int(cw * 0.05))
+        x2 = min(w, cx + cw - int(cw * 0.05))
+        if y_end > y_start and x2 > x1:
+            regions['chin'] = {
+                'image': image[y_start:y_end, x1:x2],
+                'bbox': (x1, y_start, x2 - x1, y_end - y_start)
+            }
     
     # 目の下（クマ・くすみ検出用）
     left_under_eye_indices = [226, 247, 30, 29, 27, 28, 56, 190, 243, 112, 26, 22, 23, 24]
@@ -480,33 +505,33 @@ def extract_face_regions_from_rect(image, face_rect):
             'bbox': (rc_x1, rc_y1, rc_x2-rc_x1, rc_y2-rc_y1)
         }
     
-    # 鼻: 顔の中央 30-65%の高さ、35-65%の幅
-    nose_y1 = fy + int(fh * 0.30)
-    nose_y2 = fy + int(fh * 0.65)
+    # 鼻: 顔の中央 31-64%の高さ、幅はやや右寄り（35-59%）
+    nose_y1 = fy + int(fh * 0.31)
+    nose_y2 = fy + int(fh * 0.64)
     nose_x1 = fx + int(fw * 0.35)
-    nose_x2 = fx + int(fw * 0.65)
+    nose_x2 = fx + int(fw * 0.59)
     if nose_y2 > nose_y1 and nose_x2 > nose_x1:
         regions['nose'] = {
             'image': image[nose_y1:nose_y2, nose_x1:nose_x2],
             'bbox': (nose_x1, nose_y1, nose_x2-nose_x1, nose_y2-nose_y1)
         }
     
-    # 口周り: 顔の下部中央 65-85%の高さ、25-75%の幅
-    mouth_y1 = fy + int(fh * 0.65)
-    mouth_y2 = fy + int(fh * 0.85)
-    mouth_x1 = fx + int(fw * 0.25)
-    mouth_x2 = fx + int(fw * 0.75)
+    # 口周り: 以前より少し下げる（首への被りは抑えつつ）
+    mouth_y1 = max(fy + int(fh * 0.57), nose_y2 - int(fh * 0.08))
+    mouth_y2 = fy + int(fh * 0.74)
+    mouth_x1 = fx + int(fw * 0.32)
+    mouth_x2 = fx + int(fw * 0.68)
     if mouth_y2 > mouth_y1 and mouth_x2 > mouth_x1:
         regions['mouth_area'] = {
             'image': image[mouth_y1:mouth_y2, mouth_x1:mouth_x2],
             'bbox': (mouth_x1, mouth_y1, mouth_x2-mouth_x1, mouth_y2-mouth_y1)
         }
     
-    # 顎: 顔の最下部 80-100%の高さ、20-80%の幅
-    chin_y1 = fy + int(fh * 0.80)
-    chin_y2 = fy + fh
-    chin_x1 = fx + int(fw * 0.20)
-    chin_x2 = fx + int(fw * 0.80)
+    # 顎: 少し下げて高さを最大12%fhに
+    chin_x1 = fx + int(fw * 0.35)
+    chin_x2 = fx + int(fw * 0.65)
+    chin_y1 = min(fy + int(fh * 0.84), mouth_y2 + int(0.015 * fh))
+    chin_y2 = min(fy + int(fh * 0.97), chin_y1 + int(fh * 0.12))
     if chin_y2 > chin_y1 and chin_x2 > chin_x1:
         regions['chin'] = {
             'image': image[chin_y1:chin_y2, chin_x1:chin_x2],
