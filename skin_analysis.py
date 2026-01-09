@@ -372,9 +372,9 @@ def extract_face_regions(image, landmarks):
     if all(i < len(points) for i in nose_indices):
         nose_points = points[nose_indices]
         x, y, w_region, h_region = cv2.boundingRect(nose_points)
-        # 鼻をわずかに右下へ（前回左寄せした分を少し戻す）
-        shift_x = max(1, int(0.015 * w))
-        shift_y = max(1, int(0.015 * h))
+        # 鼻をさらにわずかに右下へ（+2.5%幅、+2%高）
+        shift_x = max(1, int(0.025 * w))
+        shift_y = max(1, int(0.020 * h))
         x = max(0, min(x + shift_x, w - w_region))
         y = max(0, min(y + shift_y, h - h_region))
         regions['nose'] = {
@@ -388,18 +388,18 @@ def extract_face_regions(image, landmarks):
     if all(i < len(points) for i in mouth_indices):
         mouth_points = points[mouth_indices]
         x, y, w_region, h_region = cv2.boundingRect(mouth_points)
-        # 周辺（口周り）パディング：横10%、上10%、下14%（やや下寄せ）
+        # 周辺（口周り）パディング：横10%、上9%、下16%（もう少し下寄せ）
         pad_x = max(2, int(w_region * 0.10))
-        pad_top = max(1, int(h_region * 0.10))
-        pad_bot = max(2, int(h_region * 0.14))
+        pad_top = max(1, int(h_region * 0.09))
+        pad_bot = max(2, int(h_region * 0.16))
         x1 = max(0, x - pad_x)
         x2 = min(w, x + w_region + pad_x)
         y1 = max(0, y - pad_top)
         y2 = min(h, y + h_region + pad_bot)
-        # 全体をわずかに下へ1%（画像高基準）
-        shift_down = max(1, int(0.01 * h))
+        # 全体をさらに下へ2%（画像高基準）
+        shift_down = max(1, int(0.02 * h))
         y1 = min(h - 1, y1 + shift_down)
-        y2 = min(h, max(y1 + 1, y2 + max(1, int(0.005 * h))))
+        y2 = min(h, max(y1 + 1, y2 + max(1, int(0.01 * h))))
         regions['mouth_area'] = {
             'image': image[y1:y2, x1:x2],
             'bbox': (x1, y1, x2 - x1, y2 - y1)
@@ -412,16 +412,18 @@ def extract_face_regions(image, landmarks):
     if all(i < len(points) for i in chin_jaw_indices):
         chin_points = points[chin_jaw_indices]
         cx, cy, cw, ch = cv2.boundingRect(chin_points)
-        # 口領域の下端より少し下から開始（重複を避けつつ、やや下げる）
+        jaw_max_y = int(np.max(chin_points[:, 1]))
+        jaw_min_y = int(np.min(chin_points[:, 1]))
+        # 口領域の下端より少し下から開始。顎ラインを下回りすぎないよう制限。
         margin = max(2, int(0.02 * h))
-        y_top_from_chin = cy + int(ch * 0.15)
-        y_start = y_top_from_chin
+        base_start = cy + int(ch * 0.18)
         try:
-            y_start = max(y_top_from_chin, mouth_y_end + margin)  # mouth_y_end があれば使用
+            base_start = max(base_start, mouth_y_end + margin)
         except NameError:
             pass
-        # 高さはやや増やす（最大12%）
-        y_end = min(h, y_start + max(2, int(0.12 * h)))
+        # 顎ライン付近にクランプ（下へは+2%hまで）
+        y_start = max(jaw_min_y, min(base_start, jaw_max_y - int(0.04 * h)))
+        y_end = min(h, min(jaw_max_y + int(0.02 * h), y_start + int(0.08 * h)))
         # 横は少し内側に（頬を含みすぎないように）
         x1 = max(0, cx + int(cw * 0.05))
         x2 = min(w, cx + cw - int(cw * 0.05))
@@ -505,20 +507,20 @@ def extract_face_regions_from_rect(image, face_rect):
             'bbox': (rc_x1, rc_y1, rc_x2-rc_x1, rc_y2-rc_y1)
         }
     
-    # 鼻: 顔の中央 31-64%の高さ、幅はやや右寄り（35-59%）
-    nose_y1 = fy + int(fh * 0.31)
-    nose_y2 = fy + int(fh * 0.64)
-    nose_x1 = fx + int(fw * 0.35)
-    nose_x2 = fx + int(fw * 0.59)
+    # 鼻: 顔の中央 32-65%の高さ、幅はさらに右寄り（36-60%）
+    nose_y1 = fy + int(fh * 0.32)
+    nose_y2 = fy + int(fh * 0.65)
+    nose_x1 = fx + int(fw * 0.36)
+    nose_x2 = fx + int(fw * 0.60)
     if nose_y2 > nose_y1 and nose_x2 > nose_x1:
         regions['nose'] = {
             'image': image[nose_y1:nose_y2, nose_x1:nose_x2],
             'bbox': (nose_x1, nose_y1, nose_x2-nose_x1, nose_y2-nose_y1)
         }
     
-    # 口周り: 以前より少し下げる（首への被りは抑えつつ）
-    mouth_y1 = max(fy + int(fh * 0.57), nose_y2 - int(fh * 0.08))
-    mouth_y2 = fy + int(fh * 0.74)
+    # 口周り: 下げすぎて首にかからないように制限
+    mouth_y1 = max(fy + int(fh * 0.60), nose_y2 - int(fh * 0.06))
+    mouth_y2 = min(fy + int(fh * 0.78), fy + int(fh * 0.82))
     mouth_x1 = fx + int(fw * 0.32)
     mouth_x2 = fx + int(fw * 0.68)
     if mouth_y2 > mouth_y1 and mouth_x2 > mouth_x1:
@@ -527,11 +529,11 @@ def extract_face_regions_from_rect(image, face_rect):
             'bbox': (mouth_x1, mouth_y1, mouth_x2-mouth_x1, mouth_y2-mouth_y1)
         }
     
-    # 顎: 少し下げて高さを最大12%fhに
+    # 顎: 高さを最大8%fh、下端は顔矩形の93-96%に制限
     chin_x1 = fx + int(fw * 0.35)
     chin_x2 = fx + int(fw * 0.65)
-    chin_y1 = min(fy + int(fh * 0.84), mouth_y2 + int(0.015 * fh))
-    chin_y2 = min(fy + int(fh * 0.97), chin_y1 + int(fh * 0.12))
+    chin_y1 = min(fy + int(fh * 0.88), mouth_y2 + int(0.03 * fh))
+    chin_y2 = min(fy + int(fh * 0.96), chin_y1 + int(fh * 0.08))
     if chin_y2 > chin_y1 and chin_x2 > chin_x1:
         regions['chin'] = {
             'image': image[chin_y1:chin_y2, chin_x1:chin_x2],
